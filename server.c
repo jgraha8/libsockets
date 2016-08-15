@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
+#include <stdbool.h>
+#include <errno.h>
 
 #include "global.h"
 #include "sock.h"
@@ -17,20 +19,99 @@
 
 #define MAX_WORKER 7
 
-static int nworker=0;
+volatile sig_atomic_t wrk_count = 0;
+volatile sig_atomic_t run = 1;
 
-void handler(int sig)
+static sock_server_t server;
+
+void wait_all();
+void reset_worker_counter();
+void worker_counter_error( const char *msg_ );
+void sigterm_handler(int sig);
+void sigchld_handler(int sig);
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+bool check_data( size_t n_, const void *data_ )
 {
-	nworker--;
-	assert( nworker >= 0 );
-	pid_t pid = wait(NULL);
-	printf("Pid %d finished: nworker = %d\n", pid, nworker);
+	size_t n;
+	const size_t *v = (const size_t *)data_;
+	for( n=0; n<n_; n++ ) {
+		if( v[n] != n ) {
+			printf("v[%zd] = %zd\n", n, v[n]);
+			return false;
+		}
+	}
+	return true;
 }
 
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void wait_all()
+{
+	pid_t pid;
+	while (1) {
+		pid = waitpid(-1, NULL, 0);
+		if (errno == ECHILD) {
+			break;
+		}
+	}
+	
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void reset_worker_counter()
+{
+	signal(SIGCHLD,SIG_IGN);
+	wait_all();
+	wrk_count=0;
+	signal(SIGCHLD, sigchld_handler);
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void worker_counter_error( const char *msg_ )
+{
+	fprintf(stderr,"ERROR in worker counter: %s: resetting counter\n", msg_);
+	reset_worker_counter();
+	//raise(SIGTERM);
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void sigterm_handler(int sig)
+{
+	   printf("Caught signal %d\n",sig);
+	   run = 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void sigchld_handler(int sig)
+{
+	pid_t pid;
+	int   status;
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		wrk_count--;
+		printf("PID %d finished: wrk_count = %d\n", pid, wrk_count);
+		if( wrk_count < 0 ) worker_counter_error( "worker_count < 0" );
+	}	
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
 int main(int argc, char *argv[])
 {
 
-	sock_server_t server;
+
 	pid_t cpid;
 	size_t len;
 
@@ -40,25 +121,30 @@ int main(int argc, char *argv[])
 	data_file_t d;
 	void *data;
 
-	signal(SIGCHLD, handler);
-
+	signal(SIGCHLD, sigchld_handler);
+	signal(SIGINT,  sigterm_handler);
+	signal(SIGTERM, sigterm_handler);	
+	signal(SIGHUP,  SIG_IGN);
+	
 	sock_server_ctor( &server );
 	sock_server_bind( &server );
 
 	sock_server_listen( &server );
 
-	while(1) {
+	while(run) {
 		
 		sock_server_accept( &server );
 		
-		while( nworker == MAX_WORKER ) {
-			sleep(1);
+		while( wrk_count == MAX_WORKER ) {
 			printf("Maximum workers reached: waiting...\n");
-		} 		
-  
-		nworker++;
-		assert( nworker <= MAX_WORKER );
-		sock_server_fork( &server );
+			sleep(1);
+		}
+
+		wrk_count++;
+		if( wrk_count > MAX_WORKER ) {
+			worker_counter_error( "worker_count > MAX_WORKER" );
+		}		
+		sock_server_fork( &server );				
 
 		if( !server.parent ) {
 
@@ -69,7 +155,9 @@ int main(int argc, char *argv[])
 			sock_server_read( &server, &buffer, &len );
 
 			memcpy( &d, buffer, sizeof(d) );
-			data = (void *)((data_file_t *)buffer + 1);			
+			data = (void *)((data_file_t *)buffer + 1);
+
+			assert( check_data( d.size/sizeof(size_t), data ) );
 
 			printf("Received %zd bytes in %zd transfers\n", len, server.ntrans);
 			printf("Here is the file name: %s\n", d.name);
@@ -90,9 +178,11 @@ int main(int argc, char *argv[])
 			sock_server_close( &server ); // Closes client connection
 			break;
 		} else {
+
 		}
 	}
 
+	wait_all();
 	sock_server_dtor( &server );
 	
 	return 0;

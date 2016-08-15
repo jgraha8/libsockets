@@ -5,9 +5,9 @@
 #include "sock.h"
 #include "data_file.h"
 
-#define N 32
+#define N 64
 
-#define DATA_SIZE (40*1024*1024)
+#define DATA_SIZE (4*1024*1024)
 
 int main(int argc, char *argv[])
 {
@@ -20,13 +20,20 @@ int main(int argc, char *argv[])
 
 	char buffer[256];
 	void *data;
+	size_t *v;
+
+	size_t nelem = DATA_SIZE / sizeof(size_t);
 
 	d.size = DATA_SIZE;
 	data = malloc( d.size + sizeof(d));
 
+	v = (size_t *)((data_file_t *)data + 1);
+	
 	for( i=0; i<N; i++ ) {
 
 		memset(data, 0, d.size+sizeof(d));
+
+		for( n=0; n<nelem; n++ ) v[n] = n;
 		
 		sock_client_ctor( &sock[i], argv[1] );
 		sock_client_connect( &sock[i] );
