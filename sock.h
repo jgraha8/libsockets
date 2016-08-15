@@ -17,6 +17,7 @@ typedef struct sock_server_s {
 	int fd;
 	struct sockaddr_in addr;
 	server_client_t *client;
+	size_t ntrans;
 } sock_server_t;
 
 typedef struct sock_client_s {
@@ -24,6 +25,7 @@ typedef struct sock_client_s {
 	char *server_host;
 	struct sockaddr_in server_addr;
 	struct hostent *server;
+	size_t ntrans;
 } sock_client_t;
 
 
@@ -64,12 +66,12 @@ void sock_server_fork( sock_server_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_read( sock_server_t *this_, size_t *n_, void **data_ );
+void sock_server_read( sock_server_t *this_, void **data_, size_t *n_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_write( const sock_server_t *this_, size_t n_, void *data_ );
+void sock_server_write( sock_server_t *this_, const void *data_, size_t n_ );
 
 //------------------------------------------------------------------------------
 //
@@ -98,11 +100,11 @@ void sock_client_connect( const sock_client_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_write( const sock_client_t *this_, size_t size_, const void *data_ );
+size_t sock_client_write( sock_client_t *this_, const void *data_, size_t size_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_read( const sock_client_t *this_, size_t size_, void *data_ );
+size_t sock_client_read( sock_client_t *this_, void *data_, size_t size_ );
 
 #endif // __SOCK_H__

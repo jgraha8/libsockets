@@ -1,8 +1,11 @@
 #include <assert.h>
+#include <math.h>
 #include <netdb.h>
 
 #include "global.h"
 #include "sock.h"
+
+#define log2( a ) ( log((double)(a)) / log(2.0) )
 
 typedef struct buffer_s {
 	size_t size;
@@ -23,14 +26,19 @@ typedef struct server_client_s {
 
 static void sys_error(const char *msg);
 static void error(const char *msg);
-static void write_socket( int fd_, void *data_, size_t n_ );
+
+static size_t read_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ );
+static size_t write_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
+
+static size_t read_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ );
+static size_t write_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
 
 static void buffer_ctor( buffer_t *this_, size_t *size_ );
 static void buffer_dtor( buffer_t *this_ );
 static void buffer_resize( buffer_t *this_, size_t size_ );
 static void buffer_clear( buffer_t *this_ );
-static void buffer_read( buffer_t *this_, int fd_ );
-static void buffer_write( const buffer_t *this_, int fd_ );
+static void buffer_read( buffer_t *this_, int fd_, size_t *ntrans_ );
+static void buffer_write( buffer_t *this_, int fd_, size_t *ntrans_ );
 	
 static server_client_t *server_client_alloc( size_t *buffer_size_ );
 static void server_client_free( server_client_t *this_ );
@@ -54,15 +62,95 @@ static void error(const char *msg)
 }
 
 //------------------------------------------------------------------------------
-//
+// Performs consecutive reads to read the entire stream block into the buffer.
+// Ensures that the entire stream block is read.
 //------------------------------------------------------------------------------
-static void write_socket( int fd_, void *data_, size_t n_ )
+static size_t read_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ )
 {
+	ssize_t n;
+	size_t nread;
+	size_t r;
+
+	r=0;
+	nread = 0;
+	while(1) {
+		r++;
+		// n = read(fd_, (char *)data_ + nread, n_ - nread );
+		n = recv(fd_, (char *)data_ + nread, n_ - nread, 0 );		
+		if (n < 0) sys_error("ERROR reading from socket");
+		nread += n;
+		//printf("sock::read_stream_block: read %zd bytes\n", nread);
+		if( nread == n_ ) break;
+	}
+	if( ntrans_ ) *ntrans_ = r;
+	return nread;
+}
+
+//------------------------------------------------------------------------------
+// Performs consecutive writes to write the entire stream block into the buffer.
+// Ensures that the entire stream block is written.
+//------------------------------------------------------------------------------
+static size_t write_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
+{
+	ssize_t n;
+	size_t nwrite;
+	size_t w;
+
+	w=0;
+	nwrite = 0;
+	while(1) {
+		w++;
+		// n = write(fd_, (char *)data_ + nwrite, n_ - nwrite );
+		n = send(fd_, (char *)data_ + nwrite, n_ - nwrite, 0 );
+		if (n < 0) sys_error("ERROR writing to socket");
+		nwrite += n;
+		//printf("sock::write_stream_block: wrote %zd bytes\n", nwrite);
+		if( nwrite == n_ ) break;
+	}
+	if( ntrans_ ) *ntrans_ = w;
+	
+	return nwrite;
+}
+
+//------------------------------------------------------------------------------
+// Reads a socket message where a message is composed of
+//
+//   [ size of payload : payload ]
+//
+// The read is performed up to the buffer size n_
+//------------------------------------------------------------------------------
+static size_t read_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ )
+{
+	size_t len;
+	size_t r1, r2;
 	size_t n;
 
-	n = write( fd_, data_, n_ );
-	if (n < 0) sys_error("ERROR writing to socket");
-	if( n != n_ ) error("ERROR writing to socket");
+	n = read_stream_block( fd_, &len, sizeof(len), &r1 );
+
+	// Read the maximum allowable into the data buffer
+	len = ( n_ < len ? n_ : len );
+
+	n += read_stream_block( fd_, data_, len, &r2 );
+	
+	if( ntrans_ ) *ntrans_ = r1 + r2;
+	
+	return n;
+}
+	
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static size_t write_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
+{
+	size_t n;
+	size_t w1,w2;
+
+	n = write_stream_block( fd_, &n_, sizeof(n_), &w1 );
+	n += write_stream_block( fd_, data_, n_, &w2 );
+
+	if( ntrans_ ) *ntrans_ = w1 + w2;
+	
+	return n;
 }
 
 
@@ -99,16 +187,20 @@ static void buffer_dtor( buffer_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void buffer_resize( buffer_t *this_, size_t size_ )
+static void buffer_resize( buffer_t *this_, size_t min_size_ )
 {
-	this_->data = realloc( this_->data, size_ );
+	// Compute the new size as size = 2^n*this_->size >= min_size_
+	int n = (int)ceil(log2( ((double)min_size_) / this_->size ));
+	size_t size = this_->size << n;
+	
+	this_->data = realloc( this_->data, size );
 	assert( this_->data );
 	
 	// Zero the new block
-	if( size_ > this_->size ) 
-		memset( this_->data + this_->size, 0, size_ - this_->size );
-	
-	this_->size = size_;	
+	if( size > this_->size ) 
+		memset( this_->data + this_->size, 0, size - this_->size );
+
+	this_->size = size;	
 }
 
 //------------------------------------------------------------------------------
@@ -123,36 +215,30 @@ static void buffer_clear( buffer_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void buffer_read( buffer_t *this_, int fd_ )
+static void buffer_read( buffer_t *this_, int fd_, size_t *ntrans_ )
 {
-	size_t n;
-	size_t read_size;
+	size_t len;
+	size_t r1,r2;
 
 	buffer_clear( this_ );
+
+	read_stream_block( fd_, &len, sizeof(len), &r1 );
 	
-	while(1) {
+	buffer_resize( this_, len );
+	this_->n = len;
 
-		while( this_->size <= this_->n ) {
-			buffer_resize( this_, 2*this_->size );
-		}
+	read_stream_block( fd_, this_->data, this_->n, &r2 );
 
-		read_size = this_->size - this_->n;	
-		n = read(fd_, this_->data + this_->n, read_size );
-
-		if (n < 0) sys_error("ERROR reading from socket");
-
-		this_->n += n;
-		if( n < read_size ) break;
-	}
+	if( ntrans_ ) *ntrans_ = r1 + r2;
 }
 
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void buffer_write( const buffer_t *this_, int fd_ )
+static void buffer_write( buffer_t *this_, int fd_, size_t *ntrans_ )
 {
-	write_socket( fd_, this_->data, this_->n );
+	write_socket( fd_, this_->data, this_->n, ntrans_ );
 }
 	
 
@@ -273,12 +359,12 @@ void sock_server_fork( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_read( sock_server_t *this_, size_t *n_, void **data_ )
+void sock_server_read( sock_server_t *this_, void **data_, size_t *n_  )
 {
 	server_client_t *c = this_->client;
 	buffer_t *b = &c->buffer;
 
-	buffer_read( b, c->fd );
+	buffer_read( b, c->fd, &this_->ntrans );
 
 	*n_ = b->n;
 	*data_ = b->data;
@@ -287,20 +373,20 @@ void sock_server_read( sock_server_t *this_, size_t *n_, void **data_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_write( const sock_server_t *this_, size_t n_, void *data_ )
+void sock_server_write( sock_server_t *this_, const void *data_, size_t n_ )
 {	
 	server_client_t *c = this_->client;
 	buffer_t *b = &c->buffer;
 
 	if( data_ == NULL ) {
-		buffer_write( b, c->fd );
+		buffer_write( b, c->fd, &this_->ntrans );
 	} else {
-		write_socket( c->fd, data_, n_ );
+		write_socket( c->fd, data_, n_, &this_->ntrans );
 	}
 }
 
 //------------------------------------------------------------------------------
-//
+// 
 //------------------------------------------------------------------------------
 void sock_server_close( sock_server_t *this_ )
 {
@@ -362,17 +448,16 @@ void sock_client_connect( const sock_client_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_write( const sock_client_t *this_, size_t size_, const void *data_ )
+size_t sock_client_write( sock_client_t *this_, const void *data_, size_t size_ )
 {
-	if( write(this_->fd, data_, size_) < 0 )
-		sys_error("ERROR writing to socket");
+	return write_socket( this_->fd, data_, size_, &this_->ntrans );
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_read( const sock_client_t *this_, size_t size_, void *data_ )
+size_t sock_client_read( sock_client_t *this_, void *data_, size_t size_ )
 {
-	if( read(this_->fd, data_, size_ ) < 0 )
-		sys_error("ERROR reading from socket");
+	return read_socket( this_->fd, data_, size_, &this_->ntrans );
+
 }
