@@ -24,11 +24,21 @@ volatile sig_atomic_t run = 1;
 
 static sock_server_t server;
 
+void fini();
 void wait_all();
 void reset_worker_counter();
 void worker_counter_error( const char *msg_ );
 void sigterm_handler(int sig);
 void sigchld_handler(int sig);
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void fini() {
+	if( server.parent ) wait_all();
+	sock_server_dtor( &server );
+}
+	
 
 //------------------------------------------------------------------------------
 //
@@ -53,10 +63,7 @@ void wait_all()
 {
 	pid_t pid;
 	while (1) {
-		pid = waitpid(-1, NULL, 0);
-		if (errno == ECHILD) {
-			break;
-		}
+		if( (pid = waitpid(-1, NULL, 0)) == -1 ) break;
 	}
 	
 }
@@ -79,7 +86,6 @@ void worker_counter_error( const char *msg_ )
 {
 	fprintf(stderr,"ERROR in worker counter: %s: resetting counter\n", msg_);
 	reset_worker_counter();
-	//raise(SIGTERM);
 }
 
 //------------------------------------------------------------------------------
@@ -87,8 +93,12 @@ void worker_counter_error( const char *msg_ )
 //------------------------------------------------------------------------------
 void sigterm_handler(int sig)
 {
-	   printf("Caught signal %d\n",sig);
-	   run = 0;
+	// Only the parent process respondes to signal
+	if( server.parent ) {
+		printf("Caught signal %d: finishing current jobs\n",sig);
+		fini(); 
+		exit(sig);
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -123,7 +133,7 @@ int main(int argc, char *argv[])
 
 	signal(SIGCHLD, sigchld_handler);
 	signal(SIGINT,  sigterm_handler);
-	signal(SIGTERM, sigterm_handler);	
+	signal(SIGTERM, sigterm_handler);
 	signal(SIGHUP,  SIG_IGN);
 	
 	sock_server_ctor( &server );
@@ -131,7 +141,7 @@ int main(int argc, char *argv[])
 
 	sock_server_listen( &server );
 
-	while(run) {
+	while(1) {
 		
 		sock_server_accept( &server );
 		
@@ -147,12 +157,15 @@ int main(int argc, char *argv[])
 		sock_server_fork( &server );				
 
 		if( !server.parent ) {
+			
+			//signal(SIGINT,  SIG_IGN);
+			//signal(SIGTERM, SIG_IGN);
 
 			cpid = getpid();
 
-			printf("PID %d reading 1...\n", cpid);
+			printf("PID %d recving 1...\n", cpid);
 			
-			sock_server_read( &server, &buffer, &len );
+			sock_server_recv( &server, &buffer, &len );
 
 			memcpy( &d, buffer, sizeof(d) );
 			data = (void *)((data_file_t *)buffer + 1);
@@ -165,7 +178,7 @@ int main(int argc, char *argv[])
 			sprintf(msg,"PID %d creating file %s of %zd MB ...", cpid, d.name, d.size/1024/1024);
 
 			printf("PID %d writing 1...\n", cpid);			
-			sock_server_write( &server, (void *)msg, strlen(msg)+1);
+			sock_server_send( &server, (void *)msg, strlen(msg)+1);
 
 			FILE *fd = fopen(d.name,"wb");
 			fwrite(data, 1, d.size, fd);
@@ -173,17 +186,14 @@ int main(int argc, char *argv[])
 
 			printf("PID %d writing 2...\n", cpid);			
 			sprintf(msg,"PID %d done", cpid);
-			sock_server_write( &server, (void *)msg, strlen(msg)+1);
+			sock_server_send( &server, (void *)msg, strlen(msg)+1);
 
 			sock_server_close( &server ); // Closes client connection
 			break;
-		} else {
-
 		}
 	}
 
-	wait_all();
-	sock_server_dtor( &server );
+	fini();
 	
 	return 0;
 	

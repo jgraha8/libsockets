@@ -5,9 +5,9 @@
 #include "sock.h"
 #include "data_file.h"
 
-#define N 64
+#define N 4
 
-#define DATA_SIZE (4*1024*1024)
+// #define DATA_SIZE (4*1024*1024)
 
 int main(int argc, char *argv[])
 {
@@ -22,11 +22,14 @@ int main(int argc, char *argv[])
 	void *data;
 	size_t *v;
 
-	size_t nelem = DATA_SIZE / sizeof(size_t);
+	size_t data_size = 1024*strtol( argv[2], NULL, 10);
 
-	d.size = DATA_SIZE;
+	size_t nelem = data_size / sizeof(size_t);
+
+	d.size = data_size;
+	printf("d.size = %zd\n", d.size);
+
 	data = malloc( d.size + sizeof(d));
-
 	v = (size_t *)((data_file_t *)data + 1);
 	
 	for( i=0; i<N; i++ ) {
@@ -46,18 +49,18 @@ int main(int argc, char *argv[])
 		pid_t fpid = fork();
 
 		if( fpid == 0 ) {
-			n = sock_client_write( &sock[i], data, sizeof(d) + d.size );
+			n = sock_client_send( &sock[i], data, sizeof(d) + d.size );
 
-			printf("required %zd writes.\n", sock[i].ntrans );
+			printf("required %zd sends.\n", sock[i].ntrans );
 	
 			memset(buffer,0,256);
-			n = sock_client_read( &sock[i], buffer, 255 );
+			n = sock_client_recv( &sock[i], buffer, 255 );
 	
-			printf("Read %zd bytes: %s\n",n, buffer);
+			printf("Recv %zd bytes: %s\n",n, buffer);
 
 			memset(buffer,0,256);	
-			n = sock_client_read( &sock[i], buffer, 255 );
-			printf("Read %zd bytes: %s\n", n, buffer);
+			n = sock_client_recv( &sock[i], buffer, 255 );
+			printf("Recv %zd bytes: %s\n", n, buffer);
 
 			sock_client_dtor( &sock[i] );
 

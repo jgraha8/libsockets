@@ -27,18 +27,18 @@ typedef struct server_client_s {
 static void sys_error(const char *msg);
 static void error(const char *msg);
 
-static size_t read_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ );
-static size_t write_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
+static size_t recv_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ );
+static size_t send_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
 
-static size_t read_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ );
-static size_t write_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
+static size_t recv_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ );
+static size_t send_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ );
 
 static void buffer_ctor( buffer_t *this_, size_t *size_ );
 static void buffer_dtor( buffer_t *this_ );
 static void buffer_resize( buffer_t *this_, size_t size_ );
 static void buffer_clear( buffer_t *this_ );
-static void buffer_read( buffer_t *this_, int fd_, size_t *ntrans_ );
-static void buffer_write( buffer_t *this_, int fd_, size_t *ntrans_ );
+static void buffer_recv( buffer_t *this_, int fd_, size_t *ntrans_ );
+static void buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ );
 	
 static server_client_t *server_client_alloc( size_t *buffer_size_ );
 static void server_client_free( server_client_t *this_ );
@@ -62,75 +62,75 @@ static void error(const char *msg)
 }
 
 //------------------------------------------------------------------------------
-// Performs consecutive reads to read the entire stream block into the buffer.
-// Ensures that the entire stream block is read.
+// Performs consecutive recvs to recv the entire stream block into the buffer.
+// Ensures that the entire stream block is recv.
 //------------------------------------------------------------------------------
-static size_t read_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ )
+static size_t recv_stream_block( int fd_, void *data_, size_t n_, size_t *ntrans_ )
 {
 	ssize_t n;
-	size_t nread;
+	size_t nrecv;
 	size_t r;
 
 	r=0;
-	nread = 0;
+	nrecv = 0;
 	while(1) {
 		r++;
-		// n = read(fd_, (char *)data_ + nread, n_ - nread );
-		n = recv(fd_, (char *)data_ + nread, n_ - nread, 0 );		
-		if (n < 0) sys_error("ERROR reading from socket");
-		nread += n;
-		//printf("sock::read_stream_block: read %zd bytes\n", nread);
-		if( nread == n_ ) break;
+		// n = recv(fd_, (char *)data_ + nrecv, n_ - nrecv );
+		n = recv(fd_, (char *)data_ + nrecv, n_ - nrecv, 0 );		
+		if (n < 0) sys_error("ERROR recving from socket");
+		nrecv += n;
+		//printf("sock::recv_stream_block: recv %zd bytes\n", nrecv);
+		if( nrecv == n_ ) break;
 	}
 	if( ntrans_ ) *ntrans_ = r;
-	return nread;
+	return nrecv;
 }
 
 //------------------------------------------------------------------------------
-// Performs consecutive writes to write the entire stream block into the buffer.
+// Performs consecutive sends to send the entire stream block into the buffer.
 // Ensures that the entire stream block is written.
 //------------------------------------------------------------------------------
-static size_t write_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
+static size_t send_stream_block( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
 {
 	ssize_t n;
-	size_t nwrite;
+	size_t nsend;
 	size_t w;
 
 	w=0;
-	nwrite = 0;
+	nsend = 0;
 	while(1) {
 		w++;
-		// n = write(fd_, (char *)data_ + nwrite, n_ - nwrite );
-		n = send(fd_, (char *)data_ + nwrite, n_ - nwrite, 0 );
+		// n = send(fd_, (char *)data_ + nsend, n_ - nsend );
+		n = send(fd_, (char *)data_ + nsend, n_ - nsend, 0 );
 		if (n < 0) sys_error("ERROR writing to socket");
-		nwrite += n;
-		//printf("sock::write_stream_block: wrote %zd bytes\n", nwrite);
-		if( nwrite == n_ ) break;
+		nsend += n;
+		//printf("sock::send_stream_block: wrote %zd bytes\n", nsend);
+		if( nsend == n_ ) break;
 	}
 	if( ntrans_ ) *ntrans_ = w;
 	
-	return nwrite;
+	return nsend;
 }
 
 //------------------------------------------------------------------------------
-// Reads a socket message where a message is composed of
+// Recvs a socket message where a message is composed of
 //
 //   [ size of payload : payload ]
 //
-// The read is performed up to the buffer size n_
+// The recv is performed up to the buffer size n_
 //------------------------------------------------------------------------------
-static size_t read_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ )
+static size_t recv_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ )
 {
 	size_t len;
 	size_t r1, r2;
 	size_t n;
 
-	n = read_stream_block( fd_, &len, sizeof(len), &r1 );
+	n = recv_stream_block( fd_, &len, sizeof(len), &r1 );
 
-	// Read the maximum allowable into the data buffer
+	// Recv the maximum allowable into the data buffer
 	len = ( n_ < len ? n_ : len );
 
-	n += read_stream_block( fd_, data_, len, &r2 );
+	n += recv_stream_block( fd_, data_, len, &r2 );
 	
 	if( ntrans_ ) *ntrans_ = r1 + r2;
 	
@@ -140,13 +140,13 @@ static size_t read_socket( int fd_, void *data_, size_t n_, size_t *ntrans_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static size_t write_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
+static size_t send_socket( int fd_, const void *data_, size_t n_, size_t *ntrans_ )
 {
 	size_t n;
 	size_t w1,w2;
 
-	n = write_stream_block( fd_, &n_, sizeof(n_), &w1 );
-	n += write_stream_block( fd_, data_, n_, &w2 );
+	n = send_stream_block( fd_, &n_, sizeof(n_), &w1 );
+	n += send_stream_block( fd_, data_, n_, &w2 );
 
 	if( ntrans_ ) *ntrans_ = w1 + w2;
 	
@@ -215,19 +215,19 @@ static void buffer_clear( buffer_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void buffer_read( buffer_t *this_, int fd_, size_t *ntrans_ )
+static void buffer_recv( buffer_t *this_, int fd_, size_t *ntrans_ )
 {
 	size_t len;
 	size_t r1,r2;
 
 	buffer_clear( this_ );
 
-	read_stream_block( fd_, &len, sizeof(len), &r1 );
+	recv_stream_block( fd_, &len, sizeof(len), &r1 );
 	
 	buffer_resize( this_, len );
 	this_->n = len;
 
-	read_stream_block( fd_, this_->data, this_->n, &r2 );
+	recv_stream_block( fd_, this_->data, this_->n, &r2 );
 
 	if( ntrans_ ) *ntrans_ = r1 + r2;
 }
@@ -236,9 +236,9 @@ static void buffer_read( buffer_t *this_, int fd_, size_t *ntrans_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void buffer_write( buffer_t *this_, int fd_, size_t *ntrans_ )
+static void buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ )
 {
-	write_socket( fd_, this_->data, this_->n, ntrans_ );
+	send_socket( fd_, this_->data, this_->n, ntrans_ );
 }
 	
 
@@ -287,7 +287,7 @@ void sock_server_ctor( sock_server_t *this_ )
 		sys_error("ERROR opening socket");
 
 	this_->addr.sin_family      = AF_INET;
-	this_->addr.sin_addr.s_addr = INADDR_ANY;
+	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	this_->addr.sin_port        = htons(PORTNO);
 
 	this_->client = server_client_alloc( NULL );
@@ -359,12 +359,12 @@ void sock_server_fork( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_read( sock_server_t *this_, void **data_, size_t *n_  )
+void sock_server_recv( sock_server_t *this_, void **data_, size_t *n_  )
 {
 	server_client_t *c = this_->client;
 	buffer_t *b = &c->buffer;
 
-	buffer_read( b, c->fd, &this_->ntrans );
+	buffer_recv( b, c->fd, &this_->ntrans );
 
 	*n_ = b->n;
 	*data_ = b->data;
@@ -373,15 +373,15 @@ void sock_server_read( sock_server_t *this_, void **data_, size_t *n_  )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_write( sock_server_t *this_, const void *data_, size_t n_ )
+void sock_server_send( sock_server_t *this_, const void *data_, size_t n_ )
 {	
 	server_client_t *c = this_->client;
 	buffer_t *b = &c->buffer;
 
 	if( data_ == NULL ) {
-		buffer_write( b, c->fd, &this_->ntrans );
+		buffer_send( b, c->fd, &this_->ntrans );
 	} else {
-		write_socket( c->fd, data_, n_, &this_->ntrans );
+		send_socket( c->fd, data_, n_, &this_->ntrans );
 	}
 }
 
@@ -448,16 +448,16 @@ void sock_client_connect( const sock_client_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-size_t sock_client_write( sock_client_t *this_, const void *data_, size_t size_ )
+size_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ )
 {
-	return write_socket( this_->fd, data_, size_, &this_->ntrans );
+	return send_socket( this_->fd, data_, size_, &this_->ntrans );
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-size_t sock_client_read( sock_client_t *this_, void *data_, size_t size_ )
+size_t sock_client_recv( sock_client_t *this_, void *data_, size_t size_ )
 {
-	return read_socket( this_->fd, data_, size_, &this_->ntrans );
+	return recv_socket( this_->fd, data_, size_, &this_->ntrans );
 
 }
