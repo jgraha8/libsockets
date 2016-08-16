@@ -1,6 +1,9 @@
 #include <assert.h>
 #include <math.h>
 #include <netdb.h>
+#include <signal.h>
+#include <time.h>
+#include <errno.h>
 
 #include "global.h"
 #include "sock.h"
@@ -19,6 +22,8 @@ typedef struct server_client_s {
 	struct sockaddr_in addr;
 	buffer_t buffer;
 } server_client_t;
+
+int sock_errno = 0;
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 // LOCAL PROTOTYPES
@@ -73,23 +78,35 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
 	ssize_t len;
 	size_t nt;
 
+	ssize_t rc = 0;
+
 	nt=0;
 	len = 0;
 	while(1) {
 		nt++;
 		n = method_(fd_, (char *)data_ + len, n_ - len, 0 );
-		// If error occurs return the error code
-		// Note there is the case where n == 0, which suggests that the peer disconnected		
-		if (n < 0) {
-			if( ntrans_ ) *ntrans_ = nt;
-			return n;
+
+		if( n < 0 ) { // Error occurred
+			rc = n;
+			sock_errno = errno;
+			goto fini;
+		} else if( n == 0 ) { // Peer disconnect (set as error)
+			rc = -1;
+			sock_errno = -1;
+			goto fini;
 		}
+		assert( n > 0 );
 		len += n;
-		if( len == n_ ) break;
+		if( len == n_ ) {
+			rc = len;
+			goto fini;
+		}
 	}
-		
+
+ fini:
+	if( len != n_ ) rc = -1;
 	if( ntrans_ ) *ntrans_ = nt;
-	return len;
+	return rc;
 }
 
 //------------------------------------------------------------------------------
@@ -98,9 +115,9 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
 static ssize_t trans_socket( ssize_t (*method_)(int fd_, void *data_, size_t n_, int flags_ ),
 			     int fd_, void *data_, size_t n_, size_t *ntrans_ )
 {
-	size_t n;
-	size_t nt;
-	ssize_t len;
+	ssize_t n=0;
+	size_t nt=0;
+	ssize_t len=0;
 
 	n = trans_stream_block( method_, fd_, &n_, sizeof(n_), &nt );
 	if( ntrans_ ) *ntrans_ = nt;	
@@ -120,12 +137,16 @@ static ssize_t trans_socket( ssize_t (*method_)(int fd_, void *data_, size_t n_,
 //------------------------------------------------------------------------------
 static inline ssize_t __send( int fd_, void *data_, size_t n_, int flags_ )
 {
-	return send(fd_, data_, n_, flags_ );
+	return write(fd_, data_, n_ ); //send(fd_, data_, n_, flags_ );
 }
 
 static inline ssize_t __recv( int fd_, void *data_, size_t n_, int flags_ )
 {
-	return recv(fd_, data_, n_, flags_ );
+	ssize_t n;
+	n = recv(fd_, data_, n_, flags_ );
+	// n = read( fd_, data_, n_ );
+
+	return n;
 }
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -437,6 +458,19 @@ void sock_client_connect( const sock_client_t *this_ )
 {
 	if (connect(this_->fd,(struct sockaddr *) &this_->server_addr, sizeof(this_->server_addr)) < 0) 
 		sys_error("ERROR connecting");
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void sock_client_reconnect( sock_client_t *this_ )
+{
+	close(this_->fd);
+
+	this_->fd = socket(AF_INET, SOCK_STREAM, 0);
+	if( this_->fd < 0 )
+		sys_error("ERROR opening socket");
+	sock_client_connect(this_);
 }
 
 //------------------------------------------------------------------------------

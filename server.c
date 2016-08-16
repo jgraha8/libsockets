@@ -124,6 +124,7 @@ int main(int argc, char *argv[])
 
 	pid_t cpid;
 	size_t len;
+	ssize_t n;
 
 	void *buffer;
 	char msg[256];
@@ -137,6 +138,7 @@ int main(int argc, char *argv[])
 	signal(SIGHUP,  SIG_IGN);
 	
 	sock_server_ctor( &server );
+
 	sock_server_bind( &server );
 
 	sock_server_listen( &server );
@@ -144,7 +146,7 @@ int main(int argc, char *argv[])
 	while(1) {
 		
 		sock_server_accept( &server );
-		
+
 		while( wrk_count == MAX_WORKER ) {
 			printf("Maximum workers reached: waiting...\n");
 			sleep(1);
@@ -163,9 +165,13 @@ int main(int argc, char *argv[])
 
 			cpid = getpid();
 
-			printf("PID %d recving 1...\n", cpid);
+			printf("PID %d: receiving 1...\n", cpid);
 			
-			sock_server_recv( &server, &buffer, &len );
+			n = sock_server_recv( &server, &buffer, &len );
+			if( n < 0 ) { // Error occured
+				printf("PID %d: ERROR %d recieving data\n", cpid, sock_errno);
+				goto fini;
+			}
 
 			memcpy( &d, buffer, sizeof(d) );
 			data = (void *)((data_file_t *)buffer + 1);
@@ -174,20 +180,29 @@ int main(int argc, char *argv[])
 
 			printf("Received %zd bytes in %zd transfers\n", len, server.ntrans);
 			printf("Here is the file name: %s\n", d.name);
-		
+		 
 			sprintf(msg,"PID %d creating file %s of %zd MB ...", cpid, d.name, d.size/1024/1024);
 
-			printf("PID %d writing 1...\n", cpid);			
-			sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			printf("PID %d sending 1...\n", cpid);			
+			n = sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			if( n < 0 ) { // Error occured
+				printf("PID %d: ERROR %d sending data\n", cpid, errno);
+				goto fini;
+			}			
 
 			FILE *fd = fopen(d.name,"wb");
 			fwrite(data, 1, d.size, fd);
 			fclose(fd);
 
-			printf("PID %d writing 2...\n", cpid);			
+			printf("PID %d sending 2...\n", cpid);			
 			sprintf(msg,"PID %d done", cpid);
-			sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			n  = sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			if( n < 0 ) { // Error occured
+				printf("PID %d: ERROR %d sending data\n", cpid, errno);
+				goto fini;
+			}			
 
+		fini:
 			sock_server_close( &server ); // Closes client connection
 			break;
 		}

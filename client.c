@@ -5,7 +5,7 @@
 #include "sock.h"
 #include "data_file.h"
 
-#define N 4
+#define N 32
 
 // #define DATA_SIZE (4*1024*1024)
 
@@ -15,8 +15,8 @@ int main(int argc, char *argv[])
 	sock_client_t sock[N];
 	data_file_t d;
 	
-	int i;
-	size_t n;
+	int i,j;
+	ssize_t n;
 
 	char buffer[256];
 	void *data;
@@ -30,13 +30,14 @@ int main(int argc, char *argv[])
 	printf("d.size = %zd\n", d.size);
 
 	data = malloc( d.size + sizeof(d));
+	
 	v = (size_t *)((data_file_t *)data + 1);
 	
 	for( i=0; i<N; i++ ) {
 
 		memset(data, 0, d.size+sizeof(d));
 
-		for( n=0; n<nelem; n++ ) v[n] = n;
+		for( j=0; j<nelem; j++ ) v[j] = j;
 		
 		sock_client_ctor( &sock[i], argv[1] );
 		sock_client_connect( &sock[i] );
@@ -44,15 +45,25 @@ int main(int argc, char *argv[])
 		sprintf(d.name,"data-%d.bin", i);
 		memcpy(data, &d, sizeof(d));
 
-		printf("writing %zd bytes...\n", sizeof(d) + d.size);
+		printf("writing %zd bytes to %s...\n", sizeof(d) + d.size, d.name);
 
 		pid_t fpid = fork();
 
 		if( fpid == 0 ) {
-			n = sock_client_send( &sock[i], data, sizeof(d) + d.size );
 
-			printf("required %zd sends.\n", sock[i].ntrans );
-	
+			n=-1;
+			while(1) {
+				n = sock_client_send( &sock[i], data, sizeof(d) + d.size );
+				if( n < 0 ) {
+					printf("Unable to send %s...reconnecting\n", d.name);
+					sleep(5);
+					sock_client_reconnect( &sock[i] );
+				} else {
+					break;
+				}
+			}
+			printf("%zd:%zd:required %zd sends.\n", n, sizeof(d)+d.size,sock[i].ntrans );
+
 			memset(buffer,0,256);
 			n = sock_client_recv( &sock[i], buffer, 255 );
 	
