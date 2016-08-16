@@ -10,6 +10,17 @@
 
 #define log2( a ) ( log((double)(a)) / log(2.0) )
 
+// Syscall macros
+#define s_socket(...) socket( __VA_ARGS__ ); sock_errno = errno;
+#define s_connect(...) connect( __VA_ARGS__ ); sock_errno = errno;
+#define s_bind(...) bind( __VA_ARGS__ ); sock_errno = errno;
+#define s_listen(...) listen( __VA_ARGS__ ); sock_errno = errno;
+#define s_accept(...) accept( __VA_ARGS__ ); sock_errno = errno;
+#define s_fork(...) fork( __VA_ARGS__ ); sock_errno = errno;
+#define s_close(...) close( __VA_ARGS__ ); sock_errno = errno;
+#define s_send(...) send( __VA_ARGS__ ); sock_errno = errno;
+#define s_recv(...) recv( __VA_ARGS__ ); sock_errno = errno;
+
 typedef struct buffer_s {
 	size_t size;
 	size_t n;
@@ -29,8 +40,8 @@ int sock_errno = 0;
 // LOCAL PROTOTYPES
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-static void sys_error(const char *msg);
-static void error(const char *msg);
+// static void sys_error(const char *msg);
+// static void error(const char *msg);
 
 static ssize_t trans_stream_block( ssize_t (*method_)( int fd_, void *data_, size_t n_, int flags_ ),
 				  int fd_, void *data_, size_t n_, size_t *ntrans_ );
@@ -49,23 +60,23 @@ static ssize_t buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ );
 static server_client_t *server_client_alloc( size_t *buffer_size_ );
 static void server_client_free( server_client_t *this_ );
 
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void sys_error(const char *msg)
-{
-	perror(msg);
-	exit(EXIT_FAILURE);
-}
+/* //------------------------------------------------------------------------------ */
+/* // */
+/* //------------------------------------------------------------------------------ */
+/* static void sys_error(const char *msg) */
+/* { */
+/* 	perror(msg); */
+/* 	exit(EXIT_FAILURE); */
+/* } */
 
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void error(const char *msg)
-{
-	fprintf(stderr,msg);
-	exit(EXIT_FAILURE);
-}
+/* //------------------------------------------------------------------------------ */
+/* // */
+/* //------------------------------------------------------------------------------ */
+/* static void error(const char *msg) */
+/* { */
+/* 	fprintf(stderr,msg); */
+/* 	exit(EXIT_FAILURE); */
+/* } */
 
 //------------------------------------------------------------------------------
 // Performs consecutive recvs to recv the entire stream block into the buffer.
@@ -88,7 +99,6 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
 
 		if( n < 0 ) { // Error occurred
 			rc = n;
-			sock_errno = errno;
 			goto fini;
 		} else if( n == 0 ) { // Peer disconnect (set as error)
 			rc = -1;
@@ -104,7 +114,10 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
 	}
 
  fini:
-	if( len != n_ ) rc = -1;
+	if( len != n_ ) {
+		rc = -1;
+		sock_errno = -1;
+	}
 	if( ntrans_ ) *ntrans_ = nt;
 	return rc;
 }
@@ -137,15 +150,13 @@ static ssize_t trans_socket( ssize_t (*method_)(int fd_, void *data_, size_t n_,
 //------------------------------------------------------------------------------
 static inline ssize_t __send( int fd_, void *data_, size_t n_, int flags_ )
 {
-	return write(fd_, data_, n_ ); //send(fd_, data_, n_, flags_ );
+	ssize_t n = s_send(fd_, data_, n_, flags_ );
+	return n;
 }
 
 static inline ssize_t __recv( int fd_, void *data_, size_t n_, int flags_ )
 {
-	ssize_t n;
-	n = recv(fd_, data_, n_, flags_ );
-	// n = read( fd_, data_, n_ );
-
+	ssize_t n = s_recv(fd_, data_, n_, flags_ );
 	return n;
 }
 
@@ -174,9 +185,13 @@ static void buffer_ctor( buffer_t *this_, size_t *size_ )
 //------------------------------------------------------------------------------
 static void buffer_dtor( buffer_t *this_ )
 {
+	printf("sock::buffer_dtor called\n");	
 	this_->size = 0;
 	this_->n    = 0;
-	if( this_->data ) free( this_->data );
+	if( this_->data ) {
+		printf("sock::buffer_dtor: free(data) called\n");
+		free( this_->data );
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -187,12 +202,14 @@ static void buffer_resize( buffer_t *this_, size_t min_size_ )
 	// Compute the new size as size = 2^n*this_->size >= min_size_
 	int n = (int)ceil(log2( ((double)min_size_) / this_->size ));
 	size_t size = this_->size << n;
+
+	printf("sock::buffer_resize: old size = %zd, min size = %zd, new size = %zd\n", this_->size, min_size_, size);
 	
 	this_->data = realloc( this_->data, size );
 	assert( this_->data );
 	
 	// Zero the new block
-	if( size > this_->size ) 
+	if( size > this_->size )
 		memset( this_->data + this_->size, 0, size - this_->size );
 
 	this_->size = size;	
@@ -265,6 +282,7 @@ static server_client_t *server_client_alloc( size_t *buffer_size_ )
 //------------------------------------------------------------------------------
 static void server_client_free( server_client_t *this_ )
 {
+	printf("sock::server_client_free called\n");
 	if( this_ ) {
 		buffer_dtor( &this_->buffer );
 		free(this_);
@@ -279,84 +297,92 @@ static void server_client_free( server_client_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_ctor( sock_server_t *this_ )
+int sock_server_ctor( sock_server_t *this_ )
 {
 	memset(this_, 0, sizeof(*this_));
 
 	this_->parent = true;
 	
-	this_->fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (this_->fd < 0) 
-		sys_error("ERROR opening socket");
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if (this_->fd < 0) return -1;
 
 	this_->addr.sin_family      = AF_INET;
 	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	this_->addr.sin_port        = htons(PORTNO);
 
 	this_->client = server_client_alloc( NULL ); // Use default buffer size
+
+	return 0;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_dtor( sock_server_t *this_ )
+int sock_server_dtor( sock_server_t *this_ )
 {
+	ssize_t n;
+	printf("sock::sock_server_dtor called\n");
 	server_client_free( this_->client );
 	this_->client = NULL;
 
 	// Only the parent can close the socket file descriptor
-	if( this_->parent ) 
-		close(this_->fd);
+	if( this_->parent ) {
+		n = s_close(this_->fd);
+		if( n < 0 ) return -1;
+	}
 	
 	memset( this_, 0, sizeof(*this_) );
+
+	return 0;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_bind( const sock_server_t *this_ )
+int sock_server_bind( const sock_server_t *this_ )
 {
-	if (bind(this_->fd, (struct sockaddr *) &this_->addr,
-		 sizeof(this_->addr)) < 0) 
-		sys_error("ERROR on binding");
+	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
+		       sizeof(this_->addr));
+	return n;
 	
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_listen( const sock_server_t *this_ )
+int sock_server_listen( const sock_server_t *this_ )
 {
-	listen(this_->fd, 5);
+	int n = s_listen(this_->fd, 5);
+	return n;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_accept( sock_server_t *this_ )
+int sock_server_accept( sock_server_t *this_ )
 {
 	server_client_t *c = this_->client;
 	
 	c->len = sizeof(c->addr);
-	c->fd = accept(this_->fd, 
+	c->fd = s_accept(this_->fd, 
 		       (struct sockaddr *) &c->addr, 
 		       &c->len);
-	if (c->fd < 0) 
-		sys_error("ERROR on accept");
-
+	if (c->fd < 0) return -1;
+	return 0;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_fork( sock_server_t *this_ )
+int sock_server_fork( sock_server_t *this_ )
 {
 	pid_t fpid;
 
-	fpid = fork();
-	if( fpid < 0 ) sys_error("ERROR on fork");
+	fpid = s_fork();
+	if( fpid < 0 ) return -1;
 
 	if( fpid == 0 ) this_->parent = false;
+	return 0;
 }
 
 //------------------------------------------------------------------------------
@@ -401,13 +427,11 @@ ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t n_ )
 //------------------------------------------------------------------------------
 // 
 //------------------------------------------------------------------------------
-void sock_server_close( sock_server_t *this_ )
+int sock_server_close( sock_server_t *this_ )
 {
 	server_client_t *c = this_->client;
-	
-	close(c->fd);
-	memset(c, 0, sizeof(*c));
-
+	int n = s_close(c->fd);
+	return n;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -417,7 +441,7 @@ void sock_server_close( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_ctor( sock_client_t *this_, const char *server_host_ )
+int sock_client_ctor( sock_client_t *this_, const char *server_host_ )
 {
 	this_->server_host = strdup( server_host_ );
 
@@ -435,42 +459,47 @@ void sock_client_ctor( sock_client_t *this_, const char *server_host_ )
 	       this_->server->h_length);
 	this_->server_addr.sin_port = htons(PORTNO);
 
-	this_->fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (this_->fd < 0) 
-		sys_error("ERROR opening socket");
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if (this_->fd < 0) return -1;
+
+	return 0;
 
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_dtor( sock_client_t *this_ )
+int sock_client_dtor( sock_client_t *this_ )
 {
 	free(this_->server_host);
-	close(this_->fd);
+	int n = s_close(this_->fd);
+	if( n < 0 ) return -1;
+	
 	memset(this_,0,sizeof(*this_));
+	return 0;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_connect( const sock_client_t *this_ )
+int sock_client_connect( const sock_client_t *this_ )
 {
-	if (connect(this_->fd,(struct sockaddr *) &this_->server_addr, sizeof(this_->server_addr)) < 0) 
-		sys_error("ERROR connecting");
+	int n = s_connect(this_->fd,(struct sockaddr *) &this_->server_addr, sizeof(this_->server_addr));
+	return n;
 }
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_client_reconnect( sock_client_t *this_ )
+int sock_client_reconnect( sock_client_t *this_ )
 {
-	close(this_->fd);
-
-	this_->fd = socket(AF_INET, SOCK_STREAM, 0);
-	if( this_->fd < 0 )
-		sys_error("ERROR opening socket");
-	sock_client_connect(this_);
+	int n = s_close(this_->fd);
+	if( n < 0 ) return -1;
+	
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if( this_->fd < 0 ) return -1;
+	
+	return sock_client_connect(this_);
 }
 
 //------------------------------------------------------------------------------

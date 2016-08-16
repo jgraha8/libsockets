@@ -115,6 +115,12 @@ void sigchld_handler(int sig)
 	}	
 }
 
+void sys_error( const char *msg_ )
+{
+	perror(msg_);
+	exit(errno);
+}
+
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
@@ -137,11 +143,11 @@ int main(int argc, char *argv[])
 	signal(SIGTERM, sigterm_handler);
 	signal(SIGHUP,  SIG_IGN);
 	
-	sock_server_ctor( &server );
+	if( sock_server_ctor( &server ) < 0 ) sys_error("cant construct");
 
-	sock_server_bind( &server );
+	if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
 
-	sock_server_listen( &server );
+	if( sock_server_listen( &server ) < 0 ) sys_error( "cant listen");
 
 	while(1) {
 		
@@ -149,7 +155,7 @@ int main(int argc, char *argv[])
 
 		while( wrk_count == MAX_WORKER ) {
 			printf("Maximum workers reached: waiting...\n");
-			sleep(1);
+			sleep(5);
 		}
 
 		wrk_count++;

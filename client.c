@@ -1,6 +1,7 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <signal.h>
 #include "global.h"
 #include "sock.h"
 #include "data_file.h"
@@ -39,8 +40,12 @@ int main(int argc, char *argv[])
 
 		for( j=0; j<nelem; j++ ) v[j] = j;
 		
-		sock_client_ctor( &sock[i], argv[1] );
-		sock_client_connect( &sock[i] );
+		if( sock_client_ctor( &sock[i], argv[1] ) < 0 ) perror("Unable to construct");
+		if( sock_client_connect( &sock[i] ) < 0 ) {
+			sprintf(buffer,"Unable to connect to %s", argv[1]);
+			perror(buffer);
+			exit(errno);
+		}
 
 		sprintf(d.name,"data-%d.bin", i);
 		memcpy(data, &d, sizeof(d));
@@ -56,7 +61,7 @@ int main(int argc, char *argv[])
 				n = sock_client_send( &sock[i], data, sizeof(d) + d.size );
 				if( n < 0 ) {
 					printf("Unable to send %s...reconnecting\n", d.name);
-					sleep(5);
+					sleep(10);
 					sock_client_reconnect( &sock[i] );
 				} else {
 					break;
@@ -78,6 +83,8 @@ int main(int argc, char *argv[])
 			free(data);
 
 			goto finish;
+		} else if( fpid == -1 ) {
+			fprintf(stderr,"unable to fork");
 		}
 		
 	}
