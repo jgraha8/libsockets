@@ -66,12 +66,12 @@ void sock_server_fork( sock_server_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_recv( sock_server_t *this_, void **data_, size_t *n_ );
+ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *n_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-void sock_server_send( sock_server_t *this_, const void *data_, size_t n_ );
+ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t n_ );
 
 //------------------------------------------------------------------------------
 //
@@ -100,11 +100,11 @@ void sock_client_connect( const sock_client_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-size_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ );
+ssize_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-size_t sock_client_recv( sock_client_t *this_, void *data_, size_t size_ );
+ssize_t sock_client_recv( sock_client_t *this_, void *data_, size_t size_ );
 
 #endif // __SOCK_H__
