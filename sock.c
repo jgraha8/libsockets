@@ -22,17 +22,17 @@
 #define s_recv(...) recv( __VA_ARGS__ ); sock_errno = errno;
 
 typedef struct buffer_s {
-	size_t size;
-	size_t n;
-	void *data;
+	size_t len; // Length (in bytes) of data
+	size_t n;   // Number of bytes used in data
+	void *data; // Data
 } buffer_t;
 
-typedef struct server_client_s {
-	int fd;
-	socklen_t len;
-	struct sockaddr_in addr;
-	buffer_t buffer;
-} server_client_t;
+typedef struct comm_channel_s {
+	int fd;                   // Socket file descriptor 
+	socklen_t addr_len;       // Length of address
+	struct sockaddr_in addr;  // Remote address
+	buffer_t buf;             // Internal buffer
+} comm_channel_t;
 
 int sock_errno = 0;
 
@@ -54,29 +54,560 @@ static void buffer_ctor( buffer_t *this_, size_t *size_ );
 static void buffer_dtor( buffer_t *this_ );
 static void buffer_resize( buffer_t *this_, size_t size_ );
 static void buffer_clear( buffer_t *this_ );
-static ssize_t buffer_recv( buffer_t *this_, int fd_, size_t *ntrans_ );
-static ssize_t buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ );
 	
-static server_client_t *server_client_alloc( size_t *buffer_size_ );
-static void server_client_free( server_client_t *this_ );
+static comm_channel_t *comm_channel_alloc( size_t buf_len_ );
+static void comm_channel_free( comm_channel_t *this_ );
+static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_, uint16_t port_ );
+static int comm_channel_close( comm_channel_t *this_ );
+
+//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+/// sock_server_t
+//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_ctor( sock_server_t *this_, uint16_t port_ )
+{
+	memset(this_, 0, sizeof(*this_));
+
+	this_->parent = true;
+	
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if (this_->fd < 0) return -1;
+
+	this_->addr.sin_family      = AF_INET;
+	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	this_->addr.sin_port        = htons(port_);
+
+	this_->cc_client = comm_channel_alloc( NULL ); // Use default buffer size
+
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_dtor( sock_server_t *this_ )
+{
+	int n;
+
+	comm_channel_close( this_->cc_client );
+	comm_channel_free( this_->cc_client );
+
+	// Only the parent can close the socket file descriptor
+	if( this_->parent ) {
+		n = s_close(this_->fd);
+		if( n < 0 ) return -1;
+	}
+	memset( this_, 0, sizeof(*this_) );
+
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_bind( const sock_server_t *this_ )
+{
+	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
+		       sizeof(this_->addr));
+	return n;
+	
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_listen( const sock_server_t *this_ )
+{
+	int n = s_listen(this_->fd, 5);
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_accept( sock_server_t *this_ )
+{
+	comm_channel_t *c = this_->cc_client;
+	
+	c->addr_len = sizeof(c->addr);
+	c->fd = s_accept(this_->fd, 
+			 (struct sockaddr *) &c->addr, 
+			 &c->addr_len);
+	if (c->fd < 0) return -1;
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_fork( sock_server_t *this_ )
+{
+	pid_t fpid;
+
+	fpid = s_fork();
+	if( fpid < 0 ) return -1;
+
+	if( fpid == 0 ) this_->parent = false;
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *len_  )
+{
+	ssize_t n, _n;
+	size_t ntrans;
+	comm_channel_t *c = this_->cc_client;
+	buffer_t *buf = &c->buf;
+	tcp_header_t *hdr;
+	void *msg;
+	
+	*data_ = NULL;
+	*len_  = 0;
+
+	// Read the header
+	hdr = (tcp_header_t *)buf->data;
+	_n = trans_socket( __recv, hdr, sizeof(sock_tcp_header_t), &ntrans );
+	if( _n < 0 ) return _n;
+
+	n = _n;
+	this_->ntrans = ntrans;
+
+	// Make sure that the buffer is large enough
+	buffer_resize( buf, hdr->msg_len + sizeof(sock_tcp_header_t) );
+
+	// Read the message
+	msg = (void *)(hdr+1);
+	_n = trans_socket( __recv, msg, hdr->msg_len, &ntrans );
+	if( _n < 0 ) return _n;
+
+	n += _n;
+	this_->ntrans += ntrans;
+
+	// Set the used buffer length
+	assert( n == (hdr->msg_len + sizeof(tcp_header_t)) );
+	buf->n = n;
+
+	// Provide reference to internal data
+	*data_ = buf->data;
+	*len_  = buf->n;
+	
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t len_ )
+{
+	ssize_t n;
+	comm_channel_t *c = this_->cc_client;
+	buffer_t *buf = &c->buf;
+
+	void *data;
+	size_t len;
+
+	if( data_ == NULL ) { // Sending internal buffer
+		data = buf->data;
+		len  = buf->n;
+	} else {
+		data = (void *)data_;
+		len  = len_;
+	}
+	n = trans_socket( __send, c->fd, data, len, &this_->ntrans );
+	
+	return n;
+}
+
+//------------------------------------------------------------------------------
+// 
+//------------------------------------------------------------------------------
+int sock_server_close_client( sock_server_t *this_ )
+{
+	comm_channel_t *c = this_->cc_client;
+	int n = s_close(c->fd);
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+ssize_t sock_server_send_port( sock_server_t *this_ )
+{
+	ssize_t n;
+	comm_channel_t *c = this_->cc_client;
+	buffer_t *buf = &c->buf;
+	sock_tcp_header_t *hdr = (sock_tcp_header_t *)buf->data;
+	void *msg = (void *)(hdr+1);
+	
+	uint16_t port = ntohs(this_->addr.sin_port);
+	
+	buffer_clear( buf );
+
+	hdr.msg_len = sizeof(port);
+	
+	buf->n = sizeof(*hdr) + hdr.msg_len;
+	buffer_resize( buf, buf->n );
+
+	memcpy(msg, &port, sizeof(port));
+
+	n = sock_server_send( this_, NULL, 0 );
+
+	return n;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// sock_client_t
+////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_ctor( sock_client_t *this_, const char *server_name_, uint16_t server_port_ )
+{
+	int n;
+	
+	memset(this_,0,sizeof(*this_));
+	
+	this_->server_name = strdup( server_name_ );
+
+	this_->server_host = gethostbyname(server_name_);
+	if (this_->server_host == NULL) {
+		fprintf(stderr,"ERROR, no such host\n");
+		exit(0);
+	}
+
+	this_->cc_master = comm_channel_alloc(NULL);
+
+	n = comm_channel_open( this_->cc_master, this_->server_host, server_port_ );
+	
+	return n;
+
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_dtor( sock_client_t *this_ )
+{
+	int n;
+	
+	if( this_->cc_worker ) {
+		n = s_close( this_->cc_worker->fd );
+		if( n < 0 ) return -1;
+		
+		comm_channel_close( this_->cc_worker );
+		comm_channel_free( this_->cc_worker );
+	}
+	
+	n = s_close(this_->cc_master->fd);
+	if( n < 0 ) return -1;
+
+	comm_channel_close( this_->cc_master );
+	comm_channel_free( this_->cc_master );
+
+	free(this_->server_name);
+	
+	memset(this_,0,sizeof(*this_));
+	
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ )
+{
+
+	ssize_t n;
+	size_t ntrans;
+	tcp_header_t *hdr;
+	void *msg;
+	
+	// Set references for internal buffer
+	hdr = (tcp_header_t *)&this_->cc_master->buf.data; 
+	msg = (void *)(hdr+1);
+	
+	// Send a request to the master for a worker
+	hdr->msg_len = 0;
+	hdr->opts    = SOCK_OPTS_REQ_WPORT;
+
+	n = trans_socket( __send, this_->cc_master->fd, hdr, sizeof(*hdr), &ntrans );
+	if( n < 0 ) return (int)n;
+
+	// Get reply for the port
+	// Read header
+	n = trans_socket( __recv, this_->cc_master->fd, hdr, sizeof(*hdr), &ntrans );
+	if( n < 0 ) return (int)n;
+	n = trans_socket( __recv, this_->cc_master->fd, msg, hdr->msg_len, &ntrans );
+	if( n < 0 ) return (int)n;
+
+	// Check expected message size
+	assert( hdr->msg_len == sizeof(uint16_t) );
+	*wport_ = *(uint16_t *)msg;
+
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int __sock_client_connect_worker( sock_client_t *this_ )
+{
+	int n;
+	uint16_t wport;
+	
+	n = __sock_client_req_wport( this_, &wport );
+
+	// Check if the master port was returned
+	if( &wport == ntohs(this_->cc_master->addr.sin_port) ) {
+		this_->cc_worker = this_->cc_master;
+	} else {
+		if( !this_->cc_worker )
+			this_->cc_worker = comm_channel_alloc(NULL);
+
+		n = comm_channel_open( this_->cc_worker, this_->server_host, wport )
+		n = s_connect(this_->cc_worker->fd,
+			      (struct sockaddr *) &this_->cc_worker->addr,
+			      sizeof(this_->cc_worker->addr));
+	}
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_connect( const sock_client_t *this_ )
+{
+	int n=0;
+	n = s_connect(cc->fd,
+		      (struct sockaddr *) &cc->addr,
+		      sizeof(cc->addr));
+	if( n < 0 ) return n;
+
+	n = __sock_client_connect_worker( (sock_client_t *)this_ );
+
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_reconnect( sock_client_t *this_ )
+{
+	int n=0;
+
+	n = comm_channel_reopen( this_->cc_worker );
+	if( n < 0 ) return n;
+
+	if( this_->cc_worker != this_->cc_master ) {
+		n = comm_channel_reopen( this_->cc_master );
+		if( n < 0 ) return n;		
+	}
+
+	return sock_client_connect( this_ );
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+ssize_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ )
+{
+	return trans_socket( __send, this_->cc_worker->fd, (void *)data_, size_, &this_->ntrans );
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+ssize_t sock_client_recv( sock_client_t *this_, enum sock_comm_channel cc_,, void *data_, size_t size_ )
+{
+	return trans_socket( __recv, this_->cc_worker->fd, data_, size_, &this_->ntrans );
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// comm_channel_t
+////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static comm_channel_t *comm_channel_alloc( size_t buf_len_ )
+{
+	comm_channel_t *this_ = calloc( 1, sizeof(*this_));
+	buffer_ctor( &this_->buf, buf_len_ );
+
+	return this_;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static void comm_channel_free( comm_channel_t *this_ )
+{
+	if( this_ ) {
+		buffer_dtor( &this_->buffer );
+		free(this_);
+	}
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_,
+			      uint16_t port_ )
+
+{
+	this_->addr.sin_family = AF_INET;
+	
+	memcpy((char *)&this_->addr.sin_addr.s_addr,
+	       (char *)host_->h_addr, 
+	       host_->h_length);
+	
+	this_->addr.sin_port = htons(port_);
+	
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if (this_->fd < 0) return -1;
+
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static int comm_channel_close( comm_channel_t *this_ )
+{
+	int n;
+	n = s_close(this_->fd);
+	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int comm_channel_reopen( sock_client_t *this_ )
+{
+	int n=0;
+
+	n = s_close(this_->fd);
+	if( n < 0 ) return n;
+	
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if( cc->fd < 0 ) return -1;
+
+	return 0;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+/// buffer_t
+////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static void buffer_ctor( buffer_t *this_, size_t len_ )
+{
+	size_t len;
+	if( len_ ) {
+		len = len_;
+	} else {
+		len = sizeof(sock_tcp_header_t) + 32; // default to tcp header size + 32 byte msg
+	}
+	this_->len = len;
+	this_->n    = 0;
+	this_->data = calloc(len,1);
+	assert( this_->data );
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static void buffer_dtor( buffer_t *this_ )
+{
+	printf("sock::buffer_dtor called\n");	
+	this_->len = 0;
+	this_->n    = 0;
+	if( this_->data ) {
+		printf("sock::buffer_dtor: free(data) called\n");
+		free( this_->data );
+	}
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static void buffer_resize( buffer_t *this_, size_t min_len_ )
+{
+	if( this_->len >= min_len_ ) return;
+	
+	// Compute the new len as len = 2^n*this_->len >= min_len_
+	int n = (int)ceil(log2( ((double)min_len_) / this_->len ));
+	size_t len = this_->len << n;
+
+	assert( len > this_->len );
+
+	this_->data = realloc( this_->data, len );
+	assert( this_->data );
+	
+	// Zero the new bytes
+	memset( this_->data + this_->len, 0, len - this_->len );
+
+	this_->len = len;	
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static void buffer_clear( buffer_t *this_ )
+{
+	this_->n = 0;
+	memset( this_->data, 0, this_->len );
+}
 
 /* //------------------------------------------------------------------------------ */
 /* // */
 /* //------------------------------------------------------------------------------ */
-/* static void sys_error(const char *msg) */
+/* static ssize_t buffer_recv( buffer_t *this_, int fd_, size_t *ntrans_ ) */
 /* { */
-/* 	perror(msg); */
-/* 	exit(EXIT_FAILURE); */
+/* 	ssize_t n; */
+/* 	size_t len; */
+/* 	size_t r1,r2; */
+/* 	ssize_t nrecv; */
+
+/* 	buffer_clear( this_ ); */
+
+/* 	n = trans_stream_block( __recv, fd_, &len, sizeof(len), &r1 ); */
+/* 	if( ntrans_ ) *ntrans_ = r1; */
+/* 	if( n < 0 ) return n; */
+/* 	nrecv = n; */
+	
+/* 	buffer_resize( this_, len ); */
+/* 	this_->n = len; */
+
+/* 	n = trans_stream_block( __recv, fd_, this_->data, this_->n, &r2 ); */
+/* 	if( ntrans_ ) *ntrans_ += r2;	 */
+/* 	if( n < 0 ) return n; */
+/* 	nrecv += n; */
+
+/* 	return nrecv; */
 /* } */
+
 
 /* //------------------------------------------------------------------------------ */
 /* // */
 /* //------------------------------------------------------------------------------ */
-/* static void error(const char *msg) */
+/* static ssize_t buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ ) */
 /* { */
-/* 	fprintf(stderr,msg); */
-/* 	exit(EXIT_FAILURE); */
+/* 	return trans_socket( __send, fd_, this_->data, this_->n, ntrans_ ); */
 /* } */
+	
+////////////////////////////////////////////////////////////////////////////////
+// Helper Procedures
+////////////////////////////////////////////////////////////////////////////////
 
 //------------------------------------------------------------------------------
 // Performs consecutive recvs to recv the entire stream block into the buffer.
@@ -160,360 +691,3 @@ static inline ssize_t __recv( int fd_, void *data_, size_t n_, int flags_ )
 	return n;
 }
 
-//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
-/// buffer_t
-//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void buffer_ctor( buffer_t *this_, size_t *size_ )
-{
-	size_t size;
-	if( size_ ) {
-		size = *size_;
-	} else {
-		size = 32; // default to 32 bytes
-	}
-	this_->size = size;
-	this_->n    = 0;
-	this_->data = calloc(size,1);
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void buffer_dtor( buffer_t *this_ )
-{
-	printf("sock::buffer_dtor called\n");	
-	this_->size = 0;
-	this_->n    = 0;
-	if( this_->data ) {
-		printf("sock::buffer_dtor: free(data) called\n");
-		free( this_->data );
-	}
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void buffer_resize( buffer_t *this_, size_t min_size_ )
-{
-	// Compute the new size as size = 2^n*this_->size >= min_size_
-	int n = (int)ceil(log2( ((double)min_size_) / this_->size ));
-	size_t size = this_->size << n;
-
-	printf("sock::buffer_resize: old size = %zd, min size = %zd, new size = %zd\n", this_->size, min_size_, size);
-	
-	this_->data = realloc( this_->data, size );
-	assert( this_->data );
-	
-	// Zero the new block
-	if( size > this_->size )
-		memset( this_->data + this_->size, 0, size - this_->size );
-
-	this_->size = size;	
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void buffer_clear( buffer_t *this_ )
-{
-	this_->n = 0;
-	memset( this_->data, 0, this_->size );
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static ssize_t buffer_recv( buffer_t *this_, int fd_, size_t *ntrans_ )
-{
-	ssize_t n;
-	size_t len;
-	size_t r1,r2;
-	ssize_t nrecv;
-
-	buffer_clear( this_ );
-
-	n = trans_stream_block( __recv, fd_, &len, sizeof(len), &r1 );
-	if( ntrans_ ) *ntrans_ = r1;
-	if( n < 0 ) return n;
-	nrecv = n;
-	
-	buffer_resize( this_, len );
-	this_->n = len;
-
-	n = trans_stream_block( __recv, fd_, this_->data, this_->n, &r2 );
-	if( ntrans_ ) *ntrans_ += r2;	
-	if( n < 0 ) return n;
-	nrecv += n;
-
-	return nrecv;
-}
-
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static ssize_t buffer_send( buffer_t *this_, int fd_, size_t *ntrans_ )
-{
-	return trans_socket( __send, fd_, this_->data, this_->n, ntrans_ );
-}
-	
-
-////////////////////////////////////////////////////////////////////////////////
-/// server_client_t
-////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static server_client_t *server_client_alloc( size_t *buffer_size_ )
-{
-	server_client_t *this_ = calloc( 1, sizeof(*this_));
-	buffer_ctor( &this_->buffer, buffer_size_ );
-
-	return this_;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static void server_client_free( server_client_t *this_ )
-{
-	printf("sock::server_client_free called\n");
-	if( this_ ) {
-		buffer_dtor( &this_->buffer );
-		free(this_);
-	}
-}
-
-
-//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
-/// sock_server_t
-//::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_ctor( sock_server_t *this_ )
-{
-	memset(this_, 0, sizeof(*this_));
-
-	this_->parent = true;
-	
-	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
-	if (this_->fd < 0) return -1;
-
-	this_->addr.sin_family      = AF_INET;
-	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	this_->addr.sin_port        = htons(PORTNO);
-
-	this_->client = server_client_alloc( NULL ); // Use default buffer size
-
-	return 0;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_dtor( sock_server_t *this_ )
-{
-	ssize_t n;
-	printf("sock::sock_server_dtor called\n");
-	server_client_free( this_->client );
-	this_->client = NULL;
-
-	// Only the parent can close the socket file descriptor
-	if( this_->parent ) {
-		n = s_close(this_->fd);
-		if( n < 0 ) return -1;
-	}
-	
-	memset( this_, 0, sizeof(*this_) );
-
-	return 0;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_bind( const sock_server_t *this_ )
-{
-	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
-		       sizeof(this_->addr));
-	return n;
-	
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_listen( const sock_server_t *this_ )
-{
-	int n = s_listen(this_->fd, 5);
-	return n;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_accept( sock_server_t *this_ )
-{
-	server_client_t *c = this_->client;
-	
-	c->len = sizeof(c->addr);
-	c->fd = s_accept(this_->fd, 
-		       (struct sockaddr *) &c->addr, 
-		       &c->len);
-	if (c->fd < 0) return -1;
-	return 0;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_fork( sock_server_t *this_ )
-{
-	pid_t fpid;
-
-	fpid = s_fork();
-	if( fpid < 0 ) return -1;
-
-	if( fpid == 0 ) this_->parent = false;
-	return 0;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *n_  )
-{
-	ssize_t n;
-	server_client_t *c = this_->client;
-	buffer_t *b = &c->buffer;
-
-	*data_ = NULL;
-	*n_    = 0;
-
-	n = buffer_recv( b, c->fd, &this_->ntrans );
-
-	if( n < 0 ) return n; // Error occured
-
-	*n_ = b->n;
-	*data_ = b->data;
-	
-	return n;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t n_ )
-{
-	ssize_t n;
-	server_client_t *c = this_->client;
-	buffer_t *b = &c->buffer;
-
-	if( data_ == NULL ) {
-		n = buffer_send( b, c->fd, &this_->ntrans );
-	} else {
-		n = trans_socket( __send, c->fd, (void *)data_, n_, &this_->ntrans );
-	}
-	return n;
-}
-
-//------------------------------------------------------------------------------
-// 
-//------------------------------------------------------------------------------
-int sock_server_close( sock_server_t *this_ )
-{
-	server_client_t *c = this_->client;
-	int n = s_close(c->fd);
-	return n;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/// sock_client_t
-////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_client_ctor( sock_client_t *this_, const char *server_host_ )
-{
-	this_->server_host = strdup( server_host_ );
-
-	this_->server = gethostbyname(server_host_);
-	if (this_->server == NULL) {
-		fprintf(stderr,"ERROR, no such host\n");
-		exit(0);
-	}
-	
-	memset(&this_->server_addr, 0, sizeof(this_->server_addr));
-	
-	this_->server_addr.sin_family = AF_INET;
-	memcpy((char *)&this_->server_addr.sin_addr.s_addr,
-	       (char *)this_->server->h_addr, 
-	       this_->server->h_length);
-	this_->server_addr.sin_port = htons(PORTNO);
-
-	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
-	if (this_->fd < 0) return -1;
-
-	return 0;
-
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_client_dtor( sock_client_t *this_ )
-{
-	free(this_->server_host);
-	int n = s_close(this_->fd);
-	if( n < 0 ) return -1;
-	
-	memset(this_,0,sizeof(*this_));
-	return 0;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_client_connect( const sock_client_t *this_ )
-{
-	int n = s_connect(this_->fd,(struct sockaddr *) &this_->server_addr, sizeof(this_->server_addr));
-	return n;
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_client_reconnect( sock_client_t *this_ )
-{
-	int n = s_close(this_->fd);
-	if( n < 0 ) return -1;
-	
-	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
-	if( this_->fd < 0 ) return -1;
-	
-	return sock_client_connect(this_);
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-ssize_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ )
-{
-	return trans_socket( __send, this_->fd, (void *)data_, size_, &this_->ntrans );
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-ssize_t sock_client_recv( sock_client_t *this_, void *data_, size_t size_ )
-{
-	return trans_socket( __recv, this_->fd, data_, size_, &this_->ntrans );
-}

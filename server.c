@@ -144,9 +144,7 @@ int main(int argc, char *argv[])
 	signal(SIGHUP,  SIG_IGN);
 	
 	if( sock_server_ctor( &server ) < 0 ) sys_error("cant construct");
-
 	if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
-
 	if( sock_server_listen( &server ) < 0 ) sys_error( "cant listen");
 
 	while(1) {
