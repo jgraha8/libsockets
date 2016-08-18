@@ -14,6 +14,10 @@
 
 #define SOCK_OPTS_REQ_WPORT 0b0001
 
+#define SOCK_SF_PARENT 0b0001
+#define SOCK_SF_MASTER 0b0010
+#define SOCK_SF_WORKER 0b0100
+
 // Forward declarations
 typedef struct comm_channel_s comm_channel_t;
 
@@ -23,8 +27,7 @@ typedef struct sock_tcp_header_s {
 } sock_tcp_header_t;
 
 typedef struct sock_server_s {
-	bool parent;
-	bool is_worker;
+	unsigned char flags;
 	int fd;
 	struct sockaddr_in addr;
 	comm_channel_t *cc_client;

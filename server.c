@@ -35,7 +35,7 @@ void sigchld_handler(int sig);
 //
 //------------------------------------------------------------------------------
 void fini() {
-	if( server.parent ) wait_all();
+	if( server.flags & SOCK_SF_PARENT ) wait_all();
 	sock_server_dtor( &server );
 }
 	
@@ -94,7 +94,7 @@ void worker_counter_error( const char *msg_ )
 void sigterm_handler(int sig)
 {
 	// Only the parent process respondes to signal
-	if( server.parent ) {
+	if( server.flags & SOCK_SF_PARENT ) {
 		printf("Caught signal %d: finishing current jobs\n",sig);
 		fini(); 
 		exit(sig);
@@ -138,6 +138,8 @@ int main(int argc, char *argv[])
 	data_file_t d;
 	void *data;
 
+	sock_server_t worker;
+
 	signal(SIGCHLD, sigchld_handler);
 	signal(SIGINT,  sigterm_handler);
 	signal(SIGTERM, sigterm_handler);
@@ -166,11 +168,9 @@ int main(int argc, char *argv[])
 
 			cpid = getpid();
 
-			sock_server_accept( server.worker );
-			
 			printf("PID %d: receiving 1...\n", cpid);
 			
-			n = sock_server_recv( server.worker, &buffer, &len );
+			n = sock_server_recv( &server, &buffer, &len );
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d recieving data\n", cpid, sock_errno);
 				goto fini;
@@ -187,7 +187,7 @@ int main(int argc, char *argv[])
 			sprintf(msg,"PID %d creating file %s of %zd MB ...", cpid, d.name, d.size/1024/1024);
 
 			printf("PID %d sending 1...\n", cpid);			
-			n = sock_server_send( server.worker, (void *)msg, strlen(msg)+1);
+			n = sock_server_send( &server, (void *)msg, strlen(msg)+1);
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d sending data\n", cpid, errno);
 				goto fini;
@@ -199,7 +199,7 @@ int main(int argc, char *argv[])
 
 			printf("PID %d sending 2...\n", cpid);			
 			sprintf(msg,"PID %d done", cpid);
-			n  = sock_server_send( server.worker, (void *)msg, strlen(msg)+1);
+			n  = sock_server_send( &server, (void *)msg, strlen(msg)+1);
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d sending data\n", cpid, errno);
 				goto fini;

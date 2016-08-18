@@ -17,4 +17,4 @@ client: sock.o client.o
 PHONY: clean
 
 clean:
-	rm -f sock.o server.o server
+	rm -f sock.o server.o client.o server client

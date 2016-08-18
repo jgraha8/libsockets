@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
 
 		for( j=0; j<nelem; j++ ) v[j] = j;
 		
-		if( sock_client_ctor( &sock[i], argv[1] ) < 0 ) perror("Unable to construct");
+		if( sock_client_ctor( &sock[i], argv[1], PORTNO ) < 0 ) perror("Unable to construct");
 		if( sock_client_connect( &sock[i] ) < 0 ) {
 			sprintf(buffer,"Unable to connect to %s", argv[1]);
 			perror(buffer);
