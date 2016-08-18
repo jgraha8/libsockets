@@ -24,10 +24,13 @@ typedef struct sock_tcp_header_s {
 
 typedef struct sock_server_s {
 	bool parent;
+	bool is_worker;
 	int fd;
 	struct sockaddr_in addr;
 	comm_channel_t *cc_client;
 	size_t ntrans;
+	uint16_t wport;
+	struct sock_server_s *worker;
 } sock_server_t;
 
 typedef struct sock_client_s {
@@ -47,7 +50,7 @@ extern int sock_errno;
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-int sock_server_ctor( sock_server_t *this_, unsigned short port_ );
+int sock_server_ctor( sock_server_t *this_, unsigned short port_, sock_server_t *worker_ );
 
 //------------------------------------------------------------------------------
 //

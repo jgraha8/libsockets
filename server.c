@@ -143,9 +143,9 @@ int main(int argc, char *argv[])
 	signal(SIGTERM, sigterm_handler);
 	signal(SIGHUP,  SIG_IGN);
 	
-	if( sock_server_ctor( &server ) < 0 ) sys_error("cant construct");
-	if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
-	if( sock_server_listen( &server ) < 0 ) sys_error( "cant listen");
+	if( sock_server_ctor( &server, PORTNO, &worker ) < 0 ) sys_error("cant construct");
+	//if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
+	//if( sock_server_listen( &server ) < 0 ) sys_error( "cant listen");
 
 	while(1) {
 		
@@ -160,18 +160,17 @@ int main(int argc, char *argv[])
 		if( wrk_count > MAX_WORKER ) {
 			worker_counter_error( "worker_count > MAX_WORKER" );
 		}		
-		sock_server_fork( &server );				
+		pid_t fpid  = sock_server_fork( &server );			
 
-		if( !server.parent ) {
-			
-			//signal(SIGINT,  SIG_IGN);
-			//signal(SIGTERM, SIG_IGN);
+		if( fpid == 0 ) { // Child
 
 			cpid = getpid();
 
+			sock_server_accept( server.worker );
+			
 			printf("PID %d: receiving 1...\n", cpid);
 			
-			n = sock_server_recv( &server, &buffer, &len );
+			n = sock_server_recv( server.worker, &buffer, &len );
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d recieving data\n", cpid, sock_errno);
 				goto fini;
@@ -188,7 +187,7 @@ int main(int argc, char *argv[])
 			sprintf(msg,"PID %d creating file %s of %zd MB ...", cpid, d.name, d.size/1024/1024);
 
 			printf("PID %d sending 1...\n", cpid);			
-			n = sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			n = sock_server_send( server.worker, (void *)msg, strlen(msg)+1);
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d sending data\n", cpid, errno);
 				goto fini;
@@ -200,14 +199,13 @@ int main(int argc, char *argv[])
 
 			printf("PID %d sending 2...\n", cpid);			
 			sprintf(msg,"PID %d done", cpid);
-			n  = sock_server_send( &server, (void *)msg, strlen(msg)+1);
+			n  = sock_server_send( server.worker, (void *)msg, strlen(msg)+1);
 			if( n < 0 ) { // Error occured
 				printf("PID %d: ERROR %d sending data\n", cpid, errno);
 				goto fini;
 			}			
 
 		fini:
-			sock_server_close( &server ); // Closes client connection
 			break;
 		}
 	}
