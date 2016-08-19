@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
 		for( j=0; j<nelem; j++ ) v[j] = j;
 		
 		if( sock_client_ctor( &sock[i], argv[1], PORTNO ) < 0 ) perror("Unable to construct");
-		if( sock_client_connect( &sock[i] ) < 0 ) {
+		if( sock_client_connect( &sock[i], 0 ) < 0 ) {
 			sprintf(buffer,"Unable to connect to %s", argv[1]);
 			perror(buffer);
 			exit(errno);
@@ -79,6 +79,16 @@ int main(int argc, char *argv[])
 			//memset(buffer,0,256);	
 			n = sock_client_recv( &sock[i], (void **)&msg, &msg_len );
 			printf("Recv %zd bytes: %s\n", n, msg);
+
+			printf(" i = %d\n", i);
+			if( i == 1 ) {
+				// Close the current connect and send the sigterm
+				// Equitvalent to:
+				// sock_client_close( &sock[i] );
+				// sock_client_open( &sock[i] );
+				// sock_client_connect( &sock[i], SOCK_OPTS_SIGTERM );
+				sock_client_send_sigterm( &sock[i] );
+			}
 
 			sock_client_dtor( &sock[i] );
 

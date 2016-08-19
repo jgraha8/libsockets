@@ -148,6 +148,10 @@ int main(int argc, char *argv[])
 	
 	if( sock_server_ctor( &server, PORTNO, &worker ) < 0 )
 		sys_error("ERROR unable to construct server");
+	if( sock_server_bind( &server ) < 0 )
+		sys_error("ERROR unable to bind server");
+	if( sock_server_listen( &server ) < 0 )
+		sys_error("ERROR unable to listen on server");
 
 	while(1) {
 		

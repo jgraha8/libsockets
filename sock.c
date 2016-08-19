@@ -8,8 +8,8 @@
 #include "global.h"
 #include "sock.h"
 
-#define flip_bits_on(a,mask) ( (a) |= (mask) )
-#define flip_bits_off(a,mask) ( (a) &= ( (a) ^ (mask) ) )
+#define set_bit(a,mask) ( (a) |= (mask) )
+#define unset_bit(a,mask) ( (a) &= ( (a) ^ (mask) ) )
 
 #define log2( a ) ( log((double)(a)) / log(2.0) )
 
@@ -28,16 +28,18 @@ typedef struct buffer_s {
 	size_t len; // Length (in bytes) of data
 	size_t n;   // Number of bytes used in data
 	void *data; // Data
+	size_t alloc_len;
 } buffer_t;
 
 typedef struct comm_channel_s {
 	int fd;                   // Socket file descriptor 
 	socklen_t addr_len;       // Length of address
 	struct sockaddr_in addr;  // Remote address
-	buffer_t buf;             // Internal buffer
+	buffer_t buf;             // Internal buffer	
 } comm_channel_t;
 
 int sock_errno = 0;
+static char comm_channel_msg[64];
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 // LOCAL PROTOTYPES
@@ -46,8 +48,8 @@ int sock_errno = 0;
 // static void sys_error(const char *msg);
 // static void error(const char *msg);
 
-static int __sock_server_bind( const sock_server_t *this_ );
-static int __sock_server_listen( const sock_server_t *this_ );
+static int __sock_server_open( sock_server_t *this_, uint16_t port_ );
+static int __sock_server_close( sock_server_t *this_ );
 static int __sock_server_accept( sock_server_t *this_ );
 static ssize_t __sock_server_recv( sock_server_t *this_, sock_tcp_header_t *hdr_,
 				   void **msg_, size_t *len_  );
@@ -56,6 +58,7 @@ static ssize_t __sock_server_send( sock_server_t *this_, const sock_tcp_header_t
 static int __sock_server_setchild( sock_server_t *this_ );
 
 static ssize_t __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ );
+static ssize_t __sock_client_send_sigterm( sock_client_t *this_ );
 static int __sock_client_connect_worker( sock_client_t *this_ );
 
 static uint16_t get_sock_port( sock_server_t *this_ );
@@ -73,7 +76,7 @@ static void buffer_resize( buffer_t *this_, size_t size_ );
 static void buffer_clear( buffer_t *this_ );
 	
 static comm_channel_t *comm_channel_alloc( size_t buf_len_ );
-static void comm_channel_free( comm_channel_t *this_ );
+static int comm_channel_free( comm_channel_t **this_ );
 static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_, uint16_t port_ );
 static int comm_channel_close( comm_channel_t *this_ );
 static int comm_channel_reopen( comm_channel_t *this_ );
@@ -91,35 +94,30 @@ static ssize_t comm_channel_recv( comm_channel_t *this_, sock_tcp_header_t *hdr_
 //------------------------------------------------------------------------------
 int sock_server_ctor( sock_server_t *this_, uint16_t port_, sock_server_t *worker_ )
 {
-	int n; 
+	int n;
 
 	// Initialize
 	memset(this_, 0, sizeof(*this_));
 
 	// By default the parent, master, and client parent flags are set
 	this_->flags = SOCK_SF_PARENT | SOCK_SF_MASTER;
-	
-	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
-	if (this_->fd < 0) return -1;
 
-	this_->addr.sin_family      = AF_INET;
-	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	this_->addr.sin_port        = htons(port_);
-
-	this_->cc_client = comm_channel_alloc(0); // Use default buffer size
-	assert( this_->cc_client );
-
-	n = __sock_server_bind( this_ );   if( n < 0 ) return n;
-	n = __sock_server_listen( this_ ); if( n < 0 ) return n;
+	// Open listening socket and construct client comm channel
+	if( ( n = __sock_server_open( this_, port_ ) ) < 0 ) return n;
+	this_->cc_client = comm_channel_alloc(0);
 
 	// External reference to the worker server
 	if( worker_ ) {
 		this_->worker = worker_;
-                memset(this_->worker,0,sizeof(*this_->worker));
+
+		if( (n = sock_server_ctor( this_->worker, 0, NULL )) < 0 )
+			return n;	
+		unset_bit( this_->worker->flags, SOCK_SF_MASTER );
+		set_bit ( this_->worker->flags, SOCK_SF_WORKER );
 	} else {
 		this_->worker = this_;
 		// Enable the worker option
-		flip_bits_on(this_->flags, SOCK_SF_WORKER);
+		set_bit(this_->flags, SOCK_SF_WORKER);
 	}
 
 	return 0;
@@ -130,29 +128,43 @@ int sock_server_ctor( sock_server_t *this_, uint16_t port_, sock_server_t *worke
 //------------------------------------------------------------------------------
 int sock_server_dtor( sock_server_t *this_ )
 {
+	int n;
+	
 	// Checking if a valid address since this procedure is called recursively
 	// An alternative is to ensure that worker->worker = worker which protects against
 	// recursive dtor calls, but since we nullify all data in ctor and dtor calls,
-	// we can simply treat it as a null terminated list.
+	// we can simply treat it as a null terminated linked-list.
 	if( !this_ ) return 0;
+
+	if( (n = __sock_server_close( this_ )) < 0 ) return n;
+	if( (n = comm_channel_free( &this_->cc_client )) < 0 ) return n;
 	
-	if( this_->cc_client ) {
-		comm_channel_close( this_->cc_client );
-		comm_channel_free( this_->cc_client );
-	}
-
-	// Close the bound socket file descriptor
-	if( this_->fd ) {
-		this_->fd = s_close(this_->fd);
-		if( this_->fd < 0 ) return this_->fd;
-	}
-
 	if( this_->worker != this_ )
-		sock_server_dtor( this_->worker );
+		if( (n = sock_server_dtor( this_->worker )) < 0) return n;
 
 	memset( this_, 0, sizeof(*this_) );
 
 	return 0;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_bind( const sock_server_t *this_ )
+{
+	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
+		       sizeof(this_->addr));
+	return n;
+	
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_server_listen( const sock_server_t *this_ )
+{
+	int n = s_listen(this_->fd, 5);
+	return n;
 }
 
 //------------------------------------------------------------------------------
@@ -164,31 +176,40 @@ int sock_server_accept( sock_server_t *this_ )
 	sock_tcp_header_t hdr;
 	uint16_t wport;
 
+	pid_t pid = getpid();
+
 	assert( this_->flags & SOCK_SF_MASTER );
 	
-	n = __sock_server_accept( this_ ); if( n < 0 ) return n;
-	
-	if( this_->worker != this_ ) {
-		n = sock_server_ctor( this_->worker, 0, NULL ); if( n < 0 ) return n;	// Set the worker port
-		// Enable worker flag and turn off the master flag
-		flip_bits_on( this_->worker->flags, SOCK_SF_WORKER );
-		flip_bits_off( this_->worker->flags, SOCK_SF_MASTER );
-	}
+	if( (n = __sock_server_accept( this_ )) < 0 ) return n;
 
-	if( this_->flags & SOCK_SF_MASTER ) {
-		// Accept the incomming wport request
-		n = __sock_server_recv( this_, &hdr, NULL, NULL ); if( n < 0 ) return n;
-		
-		assert( hdr.opts & SOCK_OPTS_REQ_WPORT && hdr.msg_len == 0 );
+	sprintf(comm_channel_msg, "on sock_server_t (master)");		
+	// Recv the incomming wport request
+	n = __sock_server_recv( this_, &hdr, NULL, NULL ); if( n < 0 ) return n;
+
+	if( hdr.opts & SOCK_OPTS_REQ_WPORT ) {
+		// Open a new socket for the worker	
+		if( this_->worker != this_ ) {
+			if( this_->worker->fd == 0 ) { // Open worker listen socket if closed
+				if( (n = __sock_server_open( this_->worker, 0 )) < 0 )
+					return n;
+			}
+			if( (n = sock_server_bind( this_->worker )) < 0 ) return n;
+			if( (n = sock_server_listen( this_->worker )) < 0 ) return n;			
+		}
 
 		wport = get_sock_port( this_->worker );
+		sprintf(comm_channel_msg, "on sock_server_t.worker");				
 		n = __sock_server_send( this_, NULL, &wport, sizeof(wport)); if( n < 0 ) return n;
-	}
 
-	// Start accepting on the worker port
-	if( this_->worker != this_ ) {
-		n = __sock_server_accept( this_->worker );
-		if( n < 0 ) return n;
+		// Start accepting on the worker port
+		if( this_->worker != this_ ) {
+			if( (n = __sock_server_accept( this_->worker )) < 0 ) return n;
+			printf("(%d) sock::sock_server_accept: worker accepting on port %d\n", pid, wport);
+		}
+	} else if( hdr.opts & SOCK_OPTS_SIGTERM ) {
+		raise(SIGTERM);
+	} else {
+		return -1;
 	}
 
 	return 0;
@@ -206,11 +227,13 @@ pid_t sock_server_fork( sock_server_t *this_ )
 	if( fpid < 0 ) return fpid;
 
 	if( fpid == 0 ) { // Child
-		__sock_server_setchild( this_ );
-	} else {
-		if( this_->worker != this_ ) {
-			assert( this_->worker->flags & SOCK_SF_WORKER );
-			sock_server_dtor( this_->worker );
+		if( this_->worker != this_ ) { // Close the master
+			if( __sock_server_close( this_ ) < 0 ) return -1;
+		}
+		__sock_server_setchild( this_ );		
+	} else { // Parent
+		if( this_->worker != this_ ) { // Close the worker
+			if( __sock_server_close( this_->worker ) < 0 ) return -1;
 		}
 	}
 
@@ -220,8 +243,44 @@ pid_t sock_server_fork( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
+static int __sock_server_open( sock_server_t *this_, uint16_t port_ )
+{
+	this_->fd = s_socket(AF_INET, SOCK_STREAM, 0);
+	if (this_->fd < 0) return -1;
+
+	memset(&this_->addr, 0, sizeof(this_->addr));
+
+	this_->addr.sin_family      = AF_INET;
+	this_->addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	this_->addr.sin_port        = htons(port_);
+
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+// Close sockets and frees heap memory; does not change any other state variables
+//------------------------------------------------------------------------------
+static int __sock_server_close( sock_server_t *this_ )
+{
+	int n;
+
+	if( this_->fd ) {
+		this_->fd = s_close(this_->fd);
+		if( this_->fd < 0 ) return this_->fd;
+	}
+
+	if( this_->cc_client ) {
+		if( (n = comm_channel_close( this_->cc_client )) < 0 ) return n;
+	}
+	
+	return 0;
+}
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
 ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t len_ )
 {
+	sprintf(comm_channel_msg, "on sock_server_t.worker");				
 	return __sock_server_send( this_->worker, NULL, data_, len_ );
 }
 
@@ -230,27 +289,8 @@ ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t len_ )
 //------------------------------------------------------------------------------
 ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *len_  )
 {
+	sprintf(comm_channel_msg, "on sock_server_t.worker");			
 	return __sock_server_recv( this_->worker, NULL, data_, len_ );
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static int __sock_server_bind( const sock_server_t *this_ )
-{
-	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
-		       sizeof(this_->addr));
-	return n;
-	
-}
-
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-static int __sock_server_listen( const sock_server_t *this_ )
-{
-	int n = s_listen(this_->fd, 5);
-	return n;
 }
 
 //------------------------------------------------------------------------------
@@ -291,9 +331,9 @@ static ssize_t __sock_server_send( sock_server_t *this_, const sock_tcp_header_t
 //------------------------------------------------------------------------------
 static int __sock_server_setchild( sock_server_t *this_ )
 {
-	flip_bits_off( this_->flags, SOCK_SF_PARENT );
+	unset_bit( this_->flags, SOCK_SF_PARENT );
 	if( this_->worker != this_ ) // Not necessary but, being explicit here
-		flip_bits_off( this_->worker->flags, SOCK_SF_PARENT );
+		unset_bit( this_->worker->flags, SOCK_SF_PARENT );
 	return 0;
 }
 
@@ -333,17 +373,15 @@ int sock_client_ctor( sock_client_t *this_, const char *server_name_, uint16_t s
 int sock_client_dtor( sock_client_t *this_ )
 {
 	int n;
+
+	if( sock_client_close( this_ ) < 0 ) return -1;
 	
 	if( this_->cc_worker != this_->cc_master ) {
-		comm_channel_close( this_->cc_worker );
-		comm_channel_free( this_->cc_worker );
+		if( comm_channel_free( &this_->cc_worker ) < 0 ) return -1;
 	}
-	
-	comm_channel_close( this_->cc_master );
-	comm_channel_free( this_->cc_master );
+	if( comm_channel_free( &this_->cc_master ) < 0 ) return -1;
 
 	free(this_->server_name);
-	
 	memset(this_,0,sizeof(*this_));
 	
 	return 0;
@@ -352,7 +390,7 @@ int sock_client_dtor( sock_client_t *this_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-int sock_client_connect( const sock_client_t *this_ )
+int sock_client_connect( const sock_client_t *this_, unsigned char opts_ )
 {
 	int n=0;
 
@@ -361,9 +399,38 @@ int sock_client_connect( const sock_client_t *this_ )
 		      sizeof(this_->cc_master->addr));
 	if( n < 0 ) return n;
 
-	n = __sock_client_connect_worker( (sock_client_t *)this_ );
+	printf("sock::sock_client_connect: opts_ = %d\n", opts_);
+	
+	if( opts_ & SOCK_OPTS_REQ_WPORT || opts_ == 0 ) {
+		n = __sock_client_connect_worker( (sock_client_t *)this_ );
+	} else if( opts_ & SOCK_OPTS_SIGTERM ) {
+		n = __sock_client_send_sigterm( (sock_client_t *)this_ );
+	}
 
 	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_open( sock_client_t *this_ )
+{
+	return comm_channel_open( this_->cc_master, this_->server_host,
+				  ntohs(this_->cc_master->addr.sin_port));
+}
+
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_close( sock_client_t *this_ )
+{
+	if( this_->cc_worker != this_->cc_master ) {
+		if( comm_channel_close( this_->cc_worker ) < 0 ) return -1;
+	}
+	if( comm_channel_close( this_->cc_master ) < 0 ) return -1;
+
+	return 0;
 }
 
 //------------------------------------------------------------------------------
@@ -381,7 +448,7 @@ int sock_client_reconnect( sock_client_t *this_ )
 		if( n < 0 ) return n;		
 	}
 
-	return sock_client_connect( this_ );
+	return sock_client_connect( this_, 0 );
 }
 
 //------------------------------------------------------------------------------
@@ -389,6 +456,7 @@ int sock_client_reconnect( sock_client_t *this_ )
 //------------------------------------------------------------------------------
 ssize_t sock_client_send( sock_client_t *this_, const void *msg_, size_t len_ )
 {
+	sprintf(comm_channel_msg, "on sock_client_t.cc_worker");	
 	return comm_channel_send( this_->cc_worker, NULL, (void *)msg_, len_, &this_->ntrans );
 }
 
@@ -397,7 +465,19 @@ ssize_t sock_client_send( sock_client_t *this_, const void *msg_, size_t len_ )
 //------------------------------------------------------------------------------
 ssize_t sock_client_recv( sock_client_t *this_, void **data_, size_t *len_ )
 {
+	sprintf(comm_channel_msg, "on sock_client_t.cc_worker");	
 	return comm_channel_recv( this_->cc_worker, NULL, data_, len_, &this_->ntrans );
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int sock_client_send_sigterm( sock_client_t *this_ )
+{
+	if( sock_client_close( this_ ) < 0 ) return -1;
+	if( sock_client_open( this_ ) < 0 ) return -1;
+
+	return sock_client_connect( this_, SOCK_OPTS_SIGTERM );
 }
 
 //------------------------------------------------------------------------------
@@ -412,6 +492,8 @@ static ssize_t __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ )
 
 	void *msg;
 	size_t len;
+
+	sprintf(comm_channel_msg, "on sock_client_t.cc_master");
 	
 	// Set references for internal buffer
 	memset(&hdr,0,sizeof(hdr));
@@ -435,6 +517,20 @@ static ssize_t __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ )
 	*wport_ = *(uint16_t *)msg;
 
 	return n;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+static ssize_t __sock_client_send_sigterm( sock_client_t *this_ )
+{
+	sock_tcp_header_t hdr;
+
+	memset(&hdr,0,sizeof(hdr));
+	hdr.msg_len = 0;
+	hdr.opts = SOCK_OPTS_SIGTERM;
+
+	return comm_channel_send( this_->cc_master, &hdr, NULL, 0, &this_->ntrans );
 }
 
 //------------------------------------------------------------------------------
@@ -480,12 +576,14 @@ static comm_channel_t *comm_channel_alloc( size_t buf_len_ )
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-static void comm_channel_free( comm_channel_t *this_ )
+static int comm_channel_free( comm_channel_t **this_ )
 {
-	if( this_ ) {
-		buffer_dtor( &this_->buf );
-		free(this_);
+	if( *this_ ) {
+		buffer_dtor( &(*this_)->buf );
+		free(*this_);
 	}
+	*this_ = NULL;
+	return 0;
 }
 
 //------------------------------------------------------------------------------
@@ -590,27 +688,27 @@ static ssize_t comm_channel_recv( comm_channel_t *this_, sock_tcp_header_t *hdr_
 
 	pid_t pid = getpid();
 
-	printf("(%d) sock::comm_channel_recv: receiving header...\n", pid);
+	printf("(%d) sock::comm_channel_recv: (%s) receiving header...\n", pid, comm_channel_msg);
 	// Read the header
 	_n = trans_socket( __recv, this_->fd, NULL, hdr, sizeof(*hdr), &_ntrans );
 	if( _n < 0 ) return _n;
 	n = _n;
 	ntrans = _ntrans;
-	printf("(%d) sock::comm_channel_recv: header size = %zd, msg len = %u\n", pid, n, hdr->msg_len);
+	printf("(%d) sock::comm_channel_recv: (%s) header size = %zd, msg len = %u\n", pid, comm_channel_msg, n, hdr->msg_len);
 
 	// Make sure that the buffer is large enough
-	printf("(%d) sock::comm_channel_recv: resizing buffer...\n", pid);
+	printf("(%d) sock::comm_channel_recv: (%s) resizing buffer...\n", pid, comm_channel_msg);
 	buffer_resize( buf, hdr->msg_len );
 	buf->n = hdr->msg_len;
-	printf("(%d) sock::comm_channel_recv: buffer len = %zd, number used = %zd\n", pid, buf->len, buf->n);
+	printf("(%d) sock::comm_channel_recv: (%s) buffer len = %zd, number used = %zd\n", pid, comm_channel_msg, buf->len, buf->n);
 	
 	// Read the message
-	printf("(%d) sock::comm_channel_recv: receiving msg...\n", pid);
+	printf("(%d) sock::comm_channel_recv: (%s) receiving msg...\n", pid, comm_channel_msg);
 	_n = trans_socket( __recv, this_->fd, NULL, buf->data, buf->n, &_ntrans );
 	if( _n < 0 ) return _n;
 	n += _n;
 	ntrans += _ntrans;
-	printf("(%d) sock::comm_channel_recv: bytes read = %zd, expected = %zd\n", pid, _n, buf->n);
+	printf("(%d) sock::comm_channel_recv: (%s) bytes read = %zd, expected = %zd\n", pid, comm_channel_msg, _n, buf->n);
 
 	// Sanity check
 	assert( n == (hdr->msg_len + sizeof(*hdr)) );
@@ -640,12 +738,16 @@ static void buffer_ctor( buffer_t *this_, size_t len_ )
 	if( len_ ) {
 		len = len_;
 	} else {
-		len = 32; // 32 bytes
+		len = 1; // 1 bytes
 	}
 	this_->len = len;
 	this_->n    = 0;
 	this_->data = calloc(len,1);
 	assert( this_->data );
+
+	this_->alloc_len += len;
+
+	printf("(%d) sock::buffer_ctor called: bytes_alloc = %zd\n", getpid(), this_->alloc_len);
 }
 
 //------------------------------------------------------------------------------
@@ -653,13 +755,18 @@ static void buffer_ctor( buffer_t *this_, size_t len_ )
 //------------------------------------------------------------------------------
 static void buffer_dtor( buffer_t *this_ )
 {
-	printf("sock::buffer_dtor called\n");	
+	printf("(%d) sock::buffer_dtor called\n", getpid());
+	if( this_->data ) {
+		this_->alloc_len -= this_->len;
+		printf("(%d) sock::buffer_dtor: free(data) called: bytes alloc = %zd\n", getpid(), this_->alloc_len);
+		free( this_->data );
+	} else {
+		printf("(%d) sock::buffer_dtor: null data block found\n", getpid());
+	}
 	this_->len = 0;
 	this_->n    = 0;
-	if( this_->data ) {
-		printf("sock::buffer_dtor: free(data) called\n");
-		free( this_->data );
-	}
+	assert( this_->alloc_len == 0 );
+	
 }
 
 //------------------------------------------------------------------------------
@@ -668,7 +775,7 @@ static void buffer_dtor( buffer_t *this_ )
 static void buffer_resize( buffer_t *this_, size_t min_len_ )
 {
 	if( this_->len >= min_len_ ) return;
-	
+
 	// Compute the new len as len = 2^n*this_->len >= min_len_
 	int n = (int)ceil(log2( ((double)min_len_) / this_->len ));
 	size_t len = this_->len << n;
@@ -681,7 +788,11 @@ static void buffer_resize( buffer_t *this_, size_t min_len_ )
 	// Zero the new bytes
 	memset( this_->data + this_->len, 0, len - this_->len );
 
-	this_->len = len;	
+	this_->alloc_len += (len - this_->len);
+	this_->len = len;
+
+	printf("(%d) sock::buffer_resize called: bytes alloc = %zd\n", getpid(), this_->alloc_len);		
+
 }
 
 //------------------------------------------------------------------------------
