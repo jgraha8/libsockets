@@ -144,6 +144,7 @@ int main(int argc, char *argv[])
 	signal(SIGINT,  sigterm_handler);
 	signal(SIGTERM, sigterm_handler);
 	signal(SIGHUP,  SIG_IGN);
+	signal(SIGPIPE, SIG_IGN);
 	
 	if( sock_server_ctor( &server, PORTNO, &worker ) < 0 ) sys_error("cant construct");
 	//if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
@@ -181,7 +182,7 @@ int main(int argc, char *argv[])
 
 			assert( check_data( d.size/sizeof(size_t), data ) );
 
-			printf("Received %zd bytes in %zd transfers\n", len, server.ntrans);
+			printf("Received %zd bytes in %zd transfers\n", len, server.worker->ntrans);
 			printf("Here is the file name: %s\n", d.name);
 		 
 			sprintf(msg,"PID %d creating file %s of %zd MB ...", cpid, d.name, d.size/1024/1024);

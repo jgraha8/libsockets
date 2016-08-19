@@ -6,7 +6,7 @@
 #include "sock.h"
 #include "data_file.h"
 
-#define N 32
+#define N 2
 
 // #define DATA_SIZE (4*1024*1024)
 
@@ -20,6 +20,8 @@ int main(int argc, char *argv[])
 	ssize_t n;
 
 	char buffer[256];
+	char *msg;
+	size_t msg_len;
 	void *data;
 	size_t *v;
 
@@ -69,14 +71,14 @@ int main(int argc, char *argv[])
 			}
 			printf("%zd:%zd:required %zd sends.\n", n, sizeof(d)+d.size,sock[i].ntrans );
 
-			memset(buffer,0,256);
-			n = sock_client_recv( &sock[i], buffer, 255 );
+			//memset(buffer,0,256);
+			n = sock_client_recv( &sock[i], (void **)&msg, &msg_len );
 	
-			printf("Recv %zd bytes: %s\n",n, buffer);
+			printf("Recv %zd bytes: %s\n", n, msg);
 
-			memset(buffer,0,256);	
-			n = sock_client_recv( &sock[i], buffer, 255 );
-			printf("Recv %zd bytes: %s\n", n, buffer);
+			//memset(buffer,0,256);	
+			n = sock_client_recv( &sock[i], (void **)&msg, &msg_len );
+			printf("Recv %zd bytes: %s\n", n, msg);
 
 			sock_client_dtor( &sock[i] );
 

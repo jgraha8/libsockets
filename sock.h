@@ -14,9 +14,10 @@
 
 #define SOCK_OPTS_REQ_WPORT 0b0001
 
-#define SOCK_SF_PARENT 0b0001
-#define SOCK_SF_MASTER 0b0010
-#define SOCK_SF_WORKER 0b0100
+#define SOCK_SF_PARENT  0b0001
+#define SOCK_SF_MASTER  0b0010
+#define SOCK_SF_WORKER  0b0100
+#define SOCK_SF_CPARENT 0b1000
 
 // Forward declarations
 typedef struct comm_channel_s comm_channel_t;
@@ -32,7 +33,6 @@ typedef struct sock_server_s {
 	struct sockaddr_in addr;
 	comm_channel_t *cc_client;
 	size_t ntrans;
-	uint16_t wport;
 	struct sock_server_s *worker;
 } sock_server_t;
 
@@ -83,17 +83,17 @@ int sock_server_fork( sock_server_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *n_ );
+ssize_t sock_server_send( sock_server_t *this_, const void *msg_, size_t len_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t n_ );
+ssize_t sock_server_recv( sock_server_t *this_, void **msg_, size_t *len_ );
 
-//------------------------------------------------------------------------------
-//
-//------------------------------------------------------------------------------
-int sock_server_close( sock_server_t *this_ );
+/* //------------------------------------------------------------------------------ */
+/* // */
+/* //------------------------------------------------------------------------------ */
+/* int sock_server_close( sock_server_t *this_ ); */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// sock_client_t
@@ -127,11 +127,11 @@ int sock_client_worker_addr( sock_client_t *this_ );
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-ssize_t sock_client_send( sock_client_t *this_, const void *data_, size_t size_ );
+ssize_t sock_client_send( sock_client_t *this_, const void *msg_, size_t len_ );
 
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-ssize_t sock_client_recv( sock_client_t *this_, void *data_, size_t size_ );
+ssize_t sock_client_recv( sock_client_t *this_, void **msg_, size_t *len_ );
 
 #endif // __SOCK_H__
