@@ -144,15 +144,15 @@ int main(int argc, char *argv[])
 	signal(SIGINT,  sigterm_handler);
 	signal(SIGTERM, sigterm_handler);
 	signal(SIGHUP,  SIG_IGN);
-	signal(SIGPIPE, SIG_IGN);
+	// signal(SIGPIPE, SIG_IGN);
 	
-	if( sock_server_ctor( &server, PORTNO, &worker ) < 0 ) sys_error("cant construct");
-	//if( sock_server_bind( &server ) < 0 ) sys_error("cant bind");
-	//if( sock_server_listen( &server ) < 0 ) sys_error( "cant listen");
+	if( sock_server_ctor( &server, PORTNO, &worker ) < 0 )
+		sys_error("ERROR unable to construct server");
 
 	while(1) {
 		
-		sock_server_accept( &server );
+		if( sock_server_accept( &server ) < 0 )
+			sys_error("ERROR unable to accept connection");
 
 		while( wrk_count == MAX_WORKER ) {
 			printf("Maximum workers reached: waiting...\n");

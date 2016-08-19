@@ -6,7 +6,7 @@
 #include "sock.h"
 #include "data_file.h"
 
-#define N 2
+#define N 8
 
 // #define DATA_SIZE (4*1024*1024)
 

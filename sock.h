@@ -14,10 +14,9 @@
 
 #define SOCK_OPTS_REQ_WPORT 0b0001
 
-#define SOCK_SF_PARENT  0b0001
-#define SOCK_SF_MASTER  0b0010
-#define SOCK_SF_WORKER  0b0100
-#define SOCK_SF_CPARENT 0b1000
+#define SOCK_SF_PARENT 0b0001
+#define SOCK_SF_MASTER 0b0010
+#define SOCK_SF_WORKER 0b0100
 
 // Forward declarations
 typedef struct comm_channel_s comm_channel_t;
