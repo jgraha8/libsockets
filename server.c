@@ -177,7 +177,7 @@ int main(int argc, char *argv[])
 			
 			n = sock_server_recv( &server, &buffer, &len );
 			if( n < 0 ) { // Error occured
-				printf("PID %d: ERROR %d recieving data\n", cpid, sock_errno);
+				printf("PID %d: ERROR %d recieving data\n", cpid, errno);
 				goto fini;
 			}
 

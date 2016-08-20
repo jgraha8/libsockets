@@ -16,17 +16,6 @@
 // Return-on-error function call macros
 #define ERR_RET(val,fun) val = fun; if( val < 0 ) return val
 
-// Syscall macros
-#define s_socket(...) socket( __VA_ARGS__ ); sock_errno = errno
-#define s_connect(...) connect( __VA_ARGS__ ); sock_errno = errno
-#define s_bind(...) bind( __VA_ARGS__ ); sock_errno = errno
-#define s_listen(...) listen( __VA_ARGS__ ); sock_errno = errno
-#define s_accept(...) accept( __VA_ARGS__ ); sock_errno = errno
-#define s_fork(...) fork( __VA_ARGS__ ); sock_errno = errno
-#define s_close(...) close( __VA_ARGS__ ); sock_errno = errno
-#define s_send(...) send( __VA_ARGS__ ); sock_errno = errno
-#define s_recv(...) recv( __VA_ARGS__ ); sock_errno = errno
-
 typedef struct buffer_s {
 	size_t len; // Length (in bytes) of data
 	size_t n;   // Number of bytes used in data
@@ -40,8 +29,6 @@ typedef struct comm_channel_s {
 	struct sockaddr_in addr;  // Remote address
 	buffer_t buf;             // Internal buffer	
 } comm_channel_t;
-
-int sock_errno = 0;
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 // LOCAL PROTOTYPES
@@ -153,10 +140,8 @@ int sock_server_dtor( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 int sock_server_bind( const sock_server_t *this_ )
 {
-	int n = s_bind(this_->fd, (struct sockaddr *) &this_->addr,
-		       sizeof(this_->addr));
-	return n;
-	
+	return bind(this_->fd, (struct sockaddr *) &this_->addr,
+		    sizeof(this_->addr));
 }
 
 //------------------------------------------------------------------------------
@@ -164,8 +149,7 @@ int sock_server_bind( const sock_server_t *this_ )
 //------------------------------------------------------------------------------
 int sock_server_listen( const sock_server_t *this_ )
 {
-	int n = s_listen(this_->fd, 5);
-	return n;
+	return listen(this_->fd, 5);
 }
 
 //------------------------------------------------------------------------------
@@ -218,7 +202,7 @@ pid_t sock_server_fork( sock_server_t *this_ )
 {
 	pid_t fpid;
 
-	ERR_RET(fpid, s_fork());
+	ERR_RET(fpid, fork());
 
 	if( fpid == 0 ) { // Child
 		if( this_->worker != this_ ) { // Close the master
@@ -241,7 +225,7 @@ pid_t sock_server_fork( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 static int __sock_server_open( sock_server_t *this_, uint16_t port_ )
 {
-	ERR_RET(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
+	ERR_RET(this_->fd, socket(AF_INET, SOCK_STREAM, 0));
 
 	memset(&this_->addr, 0, sizeof(this_->addr));
 
@@ -260,7 +244,7 @@ static int __sock_server_close( sock_server_t *this_ )
 	int n;
 
 	if( this_->fd ) {
-		ERR_RET(this_->fd, s_close(this_->fd));
+		ERR_RET(this_->fd, close(this_->fd));
 	}
 
 	if( this_->cc_client ) {
@@ -293,7 +277,7 @@ static int __sock_server_accept( sock_server_t *this_ )
 	comm_channel_t *c = this_->cc_client;
 
 	ERR_RET(c->fd,
-		  s_accept(this_->fd, 
+		  accept(this_->fd, 
 			   (struct sockaddr *) &c->addr, 
 			   &c->addr_len));
 	return 0;
@@ -380,7 +364,7 @@ int sock_client_connect( const sock_client_t *this_, unsigned char opts_ )
 {
 	int n=0;
 
-	ERR_RET(n, s_connect(this_->cc_master->fd,
+	ERR_RET(n, connect(this_->cc_master->fd,
 			     (struct sockaddr *) &this_->cc_master->addr,
 			     sizeof(this_->cc_master->addr)));
 		  
@@ -529,7 +513,7 @@ static int __sock_client_connect_worker( sock_client_t *this_ )
 			this_->cc_worker = comm_channel_alloc(0);
 
 		ERR_RET(n, comm_channel_open( this_->cc_worker, this_->server_host, wport ));
-		ERR_RET(n, s_connect(this_->cc_worker->fd,
+		ERR_RET(n, connect(this_->cc_worker->fd,
 				       (struct sockaddr *) &this_->cc_worker->addr,
 				       sizeof(this_->cc_worker->addr)));
 	}
@@ -579,7 +563,7 @@ static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_
 	
 	this_->addr.sin_port = htons(port_);
 	
-	ERR_RET(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
+	ERR_RET(this_->fd, socket(AF_INET, SOCK_STREAM, 0));
 
 	return 0;
 }
@@ -590,7 +574,7 @@ static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_
 static int comm_channel_close( comm_channel_t *this_ )
 {
 	if( this_->fd )
-		this_->fd = s_close(this_->fd);
+		this_->fd = close(this_->fd);
 	return this_->fd;
 }
 
@@ -600,10 +584,10 @@ static int comm_channel_close( comm_channel_t *this_ )
 static int comm_channel_reopen( comm_channel_t *this_ )
 {
 	if( this_->fd ) {
-		ERR_RET(this_->fd, s_close(this_->fd) );
+		ERR_RET(this_->fd, close(this_->fd) );
 	}
 
-	ERR_RET( this_->fd, s_socket(AF_INET, SOCK_STREAM, 0) );
+	ERR_RET( this_->fd, socket(AF_INET, SOCK_STREAM, 0) );
 
 	return 0;
 }
@@ -808,7 +792,8 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
 			goto fini;
 		} else if( n == 0 && n_ - len != 0 ) { // Peer disconnect (set as error)
 			rc = -1;
-			sock_errno = -1;
+			errno = ECOMM; // Set as communcation error
+
 			goto fini;
 		}
 		assert( n > 0 );
@@ -822,7 +807,7 @@ static ssize_t trans_stream_block( ssize_t (*method_)(int fd_, void *data_, size
  fini:
 	if( len != n_ ) {
 		rc = -1;
-		sock_errno = -1;
+		errno = ECOMM; // Set as communcation error
 	}
 	if( ntrans_ ) *ntrans_ = nt;
 	return rc;
@@ -857,13 +842,13 @@ static ssize_t trans_socket( ssize_t (*method_)(int fd_, void *data_, size_t n_,
 //------------------------------------------------------------------------------
 static inline ssize_t __send( int fd_, void *data_, size_t n_, int flags_ )
 {
-	ssize_t n = s_send(fd_, data_, n_, flags_ );
+	ssize_t n = send(fd_, data_, n_, flags_ );
 	return n;
 }
 
 static inline ssize_t __recv( int fd_, void *data_, size_t n_, int flags_ )
 {
-	ssize_t n = s_recv(fd_, data_, n_, flags_ );
+	ssize_t n = recv(fd_, data_, n_, flags_ );
 	return n;
 }
  
