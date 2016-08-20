@@ -39,7 +39,6 @@ typedef struct comm_channel_s {
 } comm_channel_t;
 
 int sock_errno = 0;
-static char comm_channel_msg[64];
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 // LOCAL PROTOTYPES
@@ -182,7 +181,6 @@ int sock_server_accept( sock_server_t *this_ )
 	
 	if( (n = __sock_server_accept( this_ )) < 0 ) return n;
 
-	sprintf(comm_channel_msg, "on sock_server_t (master)");		
 	// Recv the incomming wport request
 	n = __sock_server_recv( this_, &hdr, NULL, NULL ); if( n < 0 ) return n;
 
@@ -193,17 +191,20 @@ int sock_server_accept( sock_server_t *this_ )
 				if( (n = __sock_server_open( this_->worker, 0 )) < 0 )
 					return n;
 			}
-			if( (n = sock_server_bind( this_->worker )) < 0 ) return n;
-			if( (n = sock_server_listen( this_->worker )) < 0 ) return n;			
+			if( (n = sock_server_bind( this_->worker )) < 0 )
+				return n;
+			if( (n = sock_server_listen( this_->worker )) < 0 )
+				return n;			
 		}
 
 		wport = get_sock_port( this_->worker );
-		sprintf(comm_channel_msg, "on sock_server_t.worker");				
-		n = __sock_server_send( this_, NULL, &wport, sizeof(wport)); if( n < 0 ) return n;
+		if( (n = __sock_server_send( this_, NULL, &wport, sizeof(wport))) < 0 )
+			return n;
 
 		// Start accepting on the worker port
 		if( this_->worker != this_ ) {
-			if( (n = __sock_server_accept( this_->worker )) < 0 ) return n;
+			if( (n = __sock_server_accept( this_->worker )) < 0 )
+				return n;
 			printf("(%d) sock::sock_server_accept: worker accepting on port %d\n", pid, wport);
 		}
 	} else if( hdr.opts & SOCK_OPTS_SIGTERM ) {
@@ -280,7 +281,6 @@ static int __sock_server_close( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t len_ )
 {
-	sprintf(comm_channel_msg, "on sock_server_t.worker");				
 	return __sock_server_send( this_->worker, NULL, data_, len_ );
 }
 
@@ -289,7 +289,6 @@ ssize_t sock_server_send( sock_server_t *this_, const void *data_, size_t len_ )
 //------------------------------------------------------------------------------
 ssize_t sock_server_recv( sock_server_t *this_, void **data_, size_t *len_  )
 {
-	sprintf(comm_channel_msg, "on sock_server_t.worker");			
 	return __sock_server_recv( this_->worker, NULL, data_, len_ );
 }
 
@@ -456,7 +455,6 @@ int sock_client_reconnect( sock_client_t *this_ )
 //------------------------------------------------------------------------------
 ssize_t sock_client_send( sock_client_t *this_, const void *msg_, size_t len_ )
 {
-	sprintf(comm_channel_msg, "on sock_client_t.cc_worker");	
 	return comm_channel_send( this_->cc_worker, NULL, (void *)msg_, len_, &this_->ntrans );
 }
 
@@ -465,7 +463,6 @@ ssize_t sock_client_send( sock_client_t *this_, const void *msg_, size_t len_ )
 //------------------------------------------------------------------------------
 ssize_t sock_client_recv( sock_client_t *this_, void **data_, size_t *len_ )
 {
-	sprintf(comm_channel_msg, "on sock_client_t.cc_worker");	
 	return comm_channel_recv( this_->cc_worker, NULL, data_, len_, &this_->ntrans );
 }
 
@@ -493,8 +490,6 @@ static ssize_t __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ )
 	void *msg;
 	size_t len;
 
-	sprintf(comm_channel_msg, "on sock_client_t.cc_master");
-	
 	// Set references for internal buffer
 	memset(&hdr,0,sizeof(hdr));
 	hdr.opts = SOCK_OPTS_REQ_WPORT;
@@ -688,27 +683,21 @@ static ssize_t comm_channel_recv( comm_channel_t *this_, sock_tcp_header_t *hdr_
 
 	pid_t pid = getpid();
 
-	printf("(%d) sock::comm_channel_recv: (%s) receiving header...\n", pid, comm_channel_msg);
 	// Read the header
 	_n = trans_socket( __recv, this_->fd, NULL, hdr, sizeof(*hdr), &_ntrans );
 	if( _n < 0 ) return _n;
 	n = _n;
 	ntrans = _ntrans;
-	printf("(%d) sock::comm_channel_recv: (%s) header size = %zd, msg len = %u\n", pid, comm_channel_msg, n, hdr->msg_len);
 
 	// Make sure that the buffer is large enough
-	printf("(%d) sock::comm_channel_recv: (%s) resizing buffer...\n", pid, comm_channel_msg);
 	buffer_resize( buf, hdr->msg_len );
 	buf->n = hdr->msg_len;
-	printf("(%d) sock::comm_channel_recv: (%s) buffer len = %zd, number used = %zd\n", pid, comm_channel_msg, buf->len, buf->n);
 	
 	// Read the message
-	printf("(%d) sock::comm_channel_recv: (%s) receiving msg...\n", pid, comm_channel_msg);
 	_n = trans_socket( __recv, this_->fd, NULL, buf->data, buf->n, &_ntrans );
 	if( _n < 0 ) return _n;
 	n += _n;
 	ntrans += _ntrans;
-	printf("(%d) sock::comm_channel_recv: (%s) bytes read = %zd, expected = %zd\n", pid, comm_channel_msg, _n, buf->n);
 
 	// Sanity check
 	assert( n == (hdr->msg_len + sizeof(*hdr)) );
