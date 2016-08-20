@@ -14,8 +14,7 @@
 #define log2( a ) ( log((double)(a)) / log(2.0) )
 
 // Return-on-error function call macros
-#define ROECALL(val,fun) val = fun; if( val < 0 ) return val
-//#define EROECALL( val = cmd ) val = cmd; if( val < 0 ) return val
+#define ERR_RET(val,fun) val = fun; if( val < 0 ) return val
 
 // Syscall macros
 #define s_socket(...) socket( __VA_ARGS__ ); sock_errno = errno
@@ -106,14 +105,14 @@ int sock_server_ctor( sock_server_t *this_, uint16_t port_, sock_server_t *worke
 	this_->flags = SOCK_SF_PARENT | SOCK_SF_MASTER;
 
 	// Open listening socket and construct client comm channel
-	ROECALL( n,  __sock_server_open( this_, port_ ) );
+	ERR_RET( n,  __sock_server_open( this_, port_ ) );
 	this_->cc_client = comm_channel_alloc(0);
 
 	// External reference to the worker server
 	if( worker_ ) {
 		this_->worker = worker_;
 
-		ROECALL(n, sock_server_ctor( this_->worker, 0, NULL ) );
+		ERR_RET(n, sock_server_ctor( this_->worker, 0, NULL ) );
 
 		unset_bit( this_->worker->flags, SOCK_SF_MASTER );
 		set_bit ( this_->worker->flags, SOCK_SF_WORKER );
@@ -139,10 +138,10 @@ int sock_server_dtor( sock_server_t *this_ )
 	// we can simply treat it as a null terminated linked-list.
 	if( !this_ ) return 0;
 
-	ROECALL(n, __sock_server_close( this_ ));
-	ROECALL(n, comm_channel_free( &this_->cc_client ));
+	ERR_RET(n, __sock_server_close( this_ ));
+	ERR_RET(n, comm_channel_free( &this_->cc_client ));
 	if( this_->worker != this_ )
-		ROECALL(n, sock_server_dtor( this_->worker ));
+		ERR_RET(n, sock_server_dtor( this_->worker ));
 
 	memset( this_, 0, sizeof(*this_) );
 
@@ -180,27 +179,27 @@ int sock_server_accept( sock_server_t *this_ )
 
 	assert( this_->flags & SOCK_SF_MASTER );
 	
-	ROECALL( n, __sock_server_accept( this_ ));
+	ERR_RET( n, __sock_server_accept( this_ ));
 
 	// Recv the incomming wport request
-	ROECALL( n, __sock_server_recv( this_, &hdr, NULL, NULL ));
+	ERR_RET( n, __sock_server_recv( this_, &hdr, NULL, NULL ));
 
 	if( hdr.opts & SOCK_OPTS_REQ_WPORT ) {
 		// Open a new socket for the worker	
 		if( this_->worker != this_ ) {
 			if( this_->worker->fd == 0 ) { // Open worker listen socket if closed
-				ROECALL( n, __sock_server_open( this_->worker, 0 ));
+				ERR_RET( n, __sock_server_open( this_->worker, 0 ));
 			}
-			ROECALL(n, sock_server_bind( this_->worker ));
-			ROECALL(n, sock_server_listen( this_->worker ));
+			ERR_RET(n, sock_server_bind( this_->worker ));
+			ERR_RET(n, sock_server_listen( this_->worker ));
 		}
 
 		wport = get_sock_port( this_->worker );
-		ROECALL(n, __sock_server_send( this_, NULL, &wport, sizeof(wport)));
+		ERR_RET(n, __sock_server_send( this_, NULL, &wport, sizeof(wport)));
 
 		// Start accepting on the worker port
 		if( this_->worker != this_ ) {
-			ROECALL(n, __sock_server_accept( this_->worker ));
+			ERR_RET(n, __sock_server_accept( this_->worker ));
 		}
 	} else if( hdr.opts & SOCK_OPTS_SIGTERM ) {
 		raise(SIGTERM);
@@ -219,7 +218,7 @@ pid_t sock_server_fork( sock_server_t *this_ )
 {
 	pid_t fpid;
 
-	ROECALL(fpid, s_fork());
+	ERR_RET(fpid, s_fork());
 
 	if( fpid == 0 ) { // Child
 		if( this_->worker != this_ ) { // Close the master
@@ -242,7 +241,7 @@ pid_t sock_server_fork( sock_server_t *this_ )
 //------------------------------------------------------------------------------
 static int __sock_server_open( sock_server_t *this_, uint16_t port_ )
 {
-	ROECALL(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
+	ERR_RET(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
 
 	memset(&this_->addr, 0, sizeof(this_->addr));
 
@@ -261,11 +260,11 @@ static int __sock_server_close( sock_server_t *this_ )
 	int n;
 
 	if( this_->fd ) {
-		ROECALL(this_->fd, s_close(this_->fd));
+		ERR_RET(this_->fd, s_close(this_->fd));
 	}
 
 	if( this_->cc_client ) {
-		ROECALL(n, comm_channel_close( this_->cc_client ));
+		ERR_RET(n, comm_channel_close( this_->cc_client ));
 	}
 	
 	return 0;
@@ -293,7 +292,7 @@ static int __sock_server_accept( sock_server_t *this_ )
 {
 	comm_channel_t *c = this_->cc_client;
 
-	ROECALL(c->fd,
+	ERR_RET(c->fd,
 		  s_accept(this_->fd, 
 			   (struct sockaddr *) &c->addr, 
 			   &c->addr_len));
@@ -362,11 +361,11 @@ int sock_client_dtor( sock_client_t *this_ )
 {
 	int n;
 	
-	ROECALL(n, sock_client_close( this_ ));
+	ERR_RET(n, sock_client_close( this_ ));
 	if( this_->cc_worker != this_->cc_master ) {
-		ROECALL(n, comm_channel_free( &this_->cc_worker ));
+		ERR_RET(n, comm_channel_free( &this_->cc_worker ));
 	}
-	ROECALL(n, comm_channel_free( &this_->cc_master ));
+	ERR_RET(n, comm_channel_free( &this_->cc_master ));
 
 	free(this_->server_name);
 	memset(this_,0,sizeof(*this_));
@@ -381,9 +380,9 @@ int sock_client_connect( const sock_client_t *this_, unsigned char opts_ )
 {
 	int n=0;
 
-	ROECALL(n, s_connect(this_->cc_master->fd,
-			       (struct sockaddr *) &this_->cc_master->addr,
-			       sizeof(this_->cc_master->addr)));
+	ERR_RET(n, s_connect(this_->cc_master->fd,
+			     (struct sockaddr *) &this_->cc_master->addr,
+			     sizeof(this_->cc_master->addr)));
 		  
 	if( opts_ & SOCK_OPTS_REQ_WPORT || opts_ == 0 ) {
 		n = __sock_client_connect_worker( (sock_client_t *)this_ );
@@ -411,9 +410,9 @@ int sock_client_close( sock_client_t *this_ )
 {
 	int n;
 	if( this_->cc_worker != this_->cc_master ) {
-		ROECALL(n, comm_channel_close( this_->cc_worker ));
+		ERR_RET(n, comm_channel_close( this_->cc_worker ));
 	}
-	ROECALL(n, comm_channel_close( this_->cc_master ));
+	ERR_RET(n, comm_channel_close( this_->cc_master ));
 
 	return 0;
 }
@@ -425,10 +424,10 @@ int sock_client_reconnect( sock_client_t *this_ )
 {
 	int n=0;
 
-	ROECALL(n, comm_channel_reopen( this_->cc_worker ));
+	ERR_RET(n, comm_channel_reopen( this_->cc_worker ));
 
 	if( this_->cc_worker != this_->cc_master ) {
-		ROECALL(n, comm_channel_reopen( this_->cc_master ));
+		ERR_RET(n, comm_channel_reopen( this_->cc_master ));
 	}
 
 	return sock_client_connect( this_, 0 );
@@ -456,8 +455,9 @@ ssize_t sock_client_recv( sock_client_t *this_, void **data_, size_t *len_ )
 int sock_client_send_sigterm( sock_client_t *this_ )
 {
 	int n;
-	ROECALL(n, sock_client_close( this_ ));
-	ROECALL(n, sock_client_open( this_ ));
+	
+	ERR_RET(n, sock_client_close( this_ ));
+	ERR_RET(n, sock_client_open( this_ ));
 
 	return sock_client_connect( this_, SOCK_OPTS_SIGTERM );
 }
@@ -481,12 +481,12 @@ static ssize_t __sock_client_req_wport( sock_client_t *this_, uint16_t *wport_ )
 
 	// Clear the buffer, so we send no data
 	buffer_clear( &this_->cc_master->buf );
-	ROECALL(_n, comm_channel_send( this_->cc_master, &hdr, NULL, 0, &ntrans ));
+	ERR_RET(_n, comm_channel_send( this_->cc_master, &hdr, NULL, 0, &ntrans ));
 	n = _n;
 	this_->ntrans = ntrans;
 
 	// Get reply for the port
-	ROECALL(_n, comm_channel_recv( this_->cc_master, &hdr, &msg, &len, &ntrans ));
+	ERR_RET(_n, comm_channel_recv( this_->cc_master, &hdr, &msg, &len, &ntrans ));
 	n += _n;
 	this_->ntrans += ntrans;
 
@@ -528,8 +528,8 @@ static int __sock_client_connect_worker( sock_client_t *this_ )
 		if( !this_->cc_worker )
 			this_->cc_worker = comm_channel_alloc(0);
 
-		ROECALL(n, comm_channel_open( this_->cc_worker, this_->server_host, wport ));
-		ROECALL(n, s_connect(this_->cc_worker->fd,
+		ERR_RET(n, comm_channel_open( this_->cc_worker, this_->server_host, wport ));
+		ERR_RET(n, s_connect(this_->cc_worker->fd,
 				       (struct sockaddr *) &this_->cc_worker->addr,
 				       sizeof(this_->cc_worker->addr)));
 	}
@@ -579,7 +579,7 @@ static int comm_channel_open( comm_channel_t *this_, const struct hostent *host_
 	
 	this_->addr.sin_port = htons(port_);
 	
-	ROECALL(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
+	ERR_RET(this_->fd, s_socket(AF_INET, SOCK_STREAM, 0));
 
 	return 0;
 }
@@ -600,10 +600,10 @@ static int comm_channel_close( comm_channel_t *this_ )
 static int comm_channel_reopen( comm_channel_t *this_ )
 {
 	if( this_->fd ) {
-		ROECALL(this_->fd, s_close(this_->fd) );
+		ERR_RET(this_->fd, s_close(this_->fd) );
 	}
 
-	ROECALL( this_->fd, s_socket(AF_INET, SOCK_STREAM, 0) );
+	ERR_RET( this_->fd, s_socket(AF_INET, SOCK_STREAM, 0) );
 
 	return 0;
 }
@@ -662,8 +662,7 @@ static ssize_t comm_channel_recv( comm_channel_t *this_, sock_tcp_header_t *hdr_
 	}
 
 	// Read the header
-	ROECALL( _n,
-		   trans_socket( __recv, this_->fd, NULL, hdr, sizeof(*hdr), &_ntrans ) );
+	ERR_RET( _n, trans_socket( __recv, this_->fd, NULL, hdr, sizeof(*hdr), &_ntrans ) );
 	n = _n;
 	ntrans = _ntrans;
 
@@ -672,8 +671,7 @@ static ssize_t comm_channel_recv( comm_channel_t *this_, sock_tcp_header_t *hdr_
 	buf->n = hdr->msg_len;
 	
 	// Read the message
-	ROECALL(_n,
-		  trans_socket( __recv, this_->fd, NULL, buf->data, buf->n, &_ntrans ));
+	ERR_RET(_n, trans_socket( __recv, this_->fd, NULL, buf->data, buf->n, &_ntrans ));
 	n += _n;
 	ntrans += _ntrans;
 
@@ -841,12 +839,12 @@ static ssize_t trans_socket( ssize_t (*method_)(int fd_, void *data_, size_t n_,
 	size_t ntrans=0;
 
 	if( hdr_ ) {
-		ROECALL(_n, trans_stream_block( method_, fd_, hdr_, sizeof(*hdr_), &_ntrans ));
+		ERR_RET(_n, trans_stream_block( method_, fd_, hdr_, sizeof(*hdr_), &_ntrans ));
 		n = _n;
 		ntrans = _ntrans;
 	}
 
-	ROECALL(_n, trans_stream_block( method_, fd_, data_, len_, &_ntrans ));
+	ERR_RET(_n, trans_stream_block( method_, fd_, data_, len_, &_ntrans ));
 	n += _n;
 	ntrans += _ntrans;
 	
