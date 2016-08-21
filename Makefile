@@ -9,7 +9,7 @@ server: sock.o server.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 client: sock.o client.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS) -lpthread
 
 .c.o:
 	$(CC) $(CFLAGS) -c -o $@ $<
