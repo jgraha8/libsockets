@@ -3,7 +3,7 @@ CFLAGS:=-Wall -g -O2
 LDFLAGS:=
 LIBS:=-lm
 
-all: server client
+all: server client usftp
 
 server: sock.o server.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
@@ -11,6 +11,8 @@ server: sock.o server.o
 client: sock.o client.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS) -lpthread
 
+usftp: sock.o usftp.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 .c.o:
 	$(CC) $(CFLAGS) -c -o $@ $<
 
