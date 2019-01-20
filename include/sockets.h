@@ -1,5 +1,25 @@
-#ifndef __SOCK_H__
-#define __SOCK_H__
+/*
+ * Copyright (c) 2016-2017,2019 Jason Graham <jgraham@compukix.net>
+ *
+ * This file is part of libsockets.
+ *
+ * libsockets is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation, either version 3 of the License,
+ * or (at your option) any later version.
+ *
+ * libsockets is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with libsockets.  If not, see
+ * <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef __SOCKETS_H__
+#define __SOCKETS_H__
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,4 +159,4 @@ ssize_t sock_client_recv( sock_client_t *this_, void **msg_, size_t *len_ );
 int sock_client_send_sigterm( sock_client_t *this_ );
 
 
-#endif // __SOCK_H__
+#endif // __SOCKETS_H__
