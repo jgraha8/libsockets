@@ -1,6 +1,6 @@
 # libsockets
 
-Copyright (C) 2019 Jason Graham <jgraham@compukix.net>
+Copyright (C) 2016-2017,2019 Jason Graham <jgraham@compukix.net>
 
 Copying and distribution of this file, with or without modification,
 are permitted in any medium without royalty provided the copyright
